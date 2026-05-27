@@ -123,6 +123,47 @@ if [ "$TOTAL_FINDINGS" -gt 0 ]; then
     fi
 fi
 
+# -----------------------------------------------------------------------
+# API spec coverage (api-coverage.json written by fuzzer after each run)
+# -----------------------------------------------------------------------
+echo ""
+echo -e "${BOLD}API spec coverage:${NC}"
+
+HAVE_COV=0
+for cov_file in "${RESULTS_BASE}"/*/api-coverage.json; do
+    [ -f "$cov_file" ] || continue
+    HAVE_COV=1
+    scenario=$(basename "$(dirname "$cov_file")")
+
+    if command -v python3 &>/dev/null; then
+        python3 - "$cov_file" "$scenario" << 'PYEOF'
+import json, sys
+path, name = sys.argv[1], sys.argv[2]
+with open(path) as f:
+    d = json.load(f)
+total   = d.get("total", 0)
+vis     = d.get("visited_count", 0)
+unvis   = d.get("unvisited_count", 0)
+pct     = int(100 * vis / total) if total else 0
+print(f"  {name:<35} {vis:3d}/{total:<3d}  ({pct}%)")
+if unvis:
+    for op in d.get("unvisited", [])[:5]:
+        print(f"    - {op['method']:<8} {op['path']}")
+    if unvis > 5:
+        print(f"    ... and {unvis - 5} more (see {path})")
+PYEOF
+    else
+        vis=$(grep -o '"visited_count":[0-9]*' "$cov_file" | grep -o '[0-9]*')
+        total=$(grep -o '"total":[0-9]*' "$cov_file" | grep -o '[0-9]*')
+        printf "  %-35s %s/%s\n" "$scenario" "${vis:-?}" "${total:-?}"
+    fi
+done
+
+if [ "$HAVE_COV" -eq 0 ]; then
+    echo "  No api-coverage.json files found."
+    echo "  (Written automatically to each scenario output dir after fuzzing)"
+fi
+
 echo ""
 echo -e "${BOLD}Raw finding files:${NC}"
 echo "  find ${RESULTS_BASE} -name '*.json' | head -20"
