@@ -75,13 +75,21 @@ docker exec "${CONTAINER}" /nodejs/bin/node \
 docker cp "${TMP_JSON}" "${CONTAINER}:/tmp/v8cov/coverage-0.json"
 rm -f "${TMP_JSON}"
 
-docker exec -w /juice-shop "${CONTAINER}" \
-    /nodejs/bin/c8 report \
-        --temp-dir    /tmp/v8cov \
-        --reports-dir /tmp/cov-report \
-        --reporter    html \
-        --reporter    text \
-        --src         /juice-shop/build
+# c8 is installed globally by the Dockerfile; locate its CLI via node so the
+# script is independent of where npm placed the global bin symlink.
+docker exec -w /juice-shop "${CONTAINER}" /nodejs/bin/node -e "
+const {execFileSync} = require('child_process');
+const p = require('path');
+const node = process.execPath;
+const c8 = p.join(p.dirname(node), '../lib/node_modules/c8/bin/c8.js');
+execFileSync(node, [c8, 'report',
+    '--temp-dir',    '/tmp/v8cov',
+    '--reports-dir', '/tmp/cov-report',
+    '--reporter',    'html',
+    '--reporter',    'text',
+    '--src',         '/juice-shop/build',
+], {stdio: 'inherit'});
+"
 
 # -----------------------------------------------------------------------
 # 5. Copy report out of container
