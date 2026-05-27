@@ -1,0 +1,23 @@
+version: "3.8"
+
+# Standard Juice Shop — no coverage instrumentation.
+# Use for scenarios 1-4, 6-8 (pure-random and authenticated modes).
+#
+#   docker compose up -d
+#   docker compose down -v
+
+services:
+  juice-shop:
+    image: bkimminich/juice-shop:latest
+    container_name: juice-shop
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=unsafe
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/rest/admin/application-configuration"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s

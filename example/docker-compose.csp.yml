@@ -1,0 +1,32 @@
+version: "3.8"
+
+# Juice Shop with CSP sidecar (coverage-guided mode).
+# Overrides docker-compose.yml: replaces the standard image with
+# a locally-built image that loads the CSP adapter via NODE_OPTIONS.
+#
+# Build first:
+#   docker compose -f docker-compose.yml -f docker-compose.csp.yml build
+#
+# Then run:
+#   docker compose -f docker-compose.yml -f docker-compose.csp.yml up -d
+
+services:
+  juice-shop:
+    build:
+      context: ./csp
+      dockerfile: Dockerfile
+    image: juice-shop-csp:local
+    container_name: juice-shop-csp
+    ports:
+      - "3000:3000"
+      - "8080:8080"          # CSP sidecar port
+    environment:
+      - NODE_ENV=unsafe
+      - CSP_PORT=8080        # read by adapter.js
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/rest/admin/application-configuration"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 45s
