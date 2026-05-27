@@ -26,6 +26,16 @@ echo "  User:     ${FUZZER_USER}"
 echo "  Duration: ${DURATION_QUICK}"
 echo "  Output:   ${OUT}/"
 echo ""
+printf "Command:\n"
+printf "  %s \\\\\n"      "${FUZZER}"
+printf "    -spec     %s \\\\\n" "${SPEC_FILE}"
+printf "    -url      %s \\\\\n" "${JUICE_URL}"
+printf "    -user     %s \\\\\n" "${FUZZER_USER}"
+printf "    -password %s \\\\\n" "${FUZZER_PASS}"
+printf "    -duration %s \\\\\n" "${DURATION_QUICK}"
+printf "    -output   %s \\\\\n" "${OUT}"
+printf "    -rps      %s\n"      "${RPS}"
+printf "\n"
 
 "${FUZZER}" \
     -spec     "${SPEC_FILE}" \
