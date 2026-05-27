@@ -19,7 +19,7 @@ ENV NODE_OPTIONS="--require /juice-shop/csp-adapter.js"
 # c8 is used by 11_coverage_report.sh to convert accumulated V8 ScriptCoverage
 # into an HTML/text coverage report. Installed globally so it is available via
 # the `c8` command inside the container without a network call at report time.
-RUN npm install -g c8 --prefer-offline 2>/dev/null || npm install -g c8
+RUN ["npm", "install", "-g", "c8"]
 
 # Juice Shop: 3000  |  CSP sidecar: 8080
 EXPOSE 3000 8080
