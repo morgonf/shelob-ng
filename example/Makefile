@@ -21,7 +21,7 @@ SCRIPTS := ./scripts
 .PHONY: help build check setup \
         start start-csp stop logs \
         run-1 run-2 run-3 run-4 run-5 run-6 run-7 run-8 \
-        run-all run-quick report clean
+        run-all run-quick report coverage-report clean
 
 ## help: print this message
 help:
@@ -47,10 +47,11 @@ help:
 	@echo "    make run-8       — Scenario 8: full (all features, $(DURATION_FULL))"
 	@echo ""
 	@echo "  Convenience:"
-	@echo "    make run-quick   — scenarios 1-4 back-to-back (no CSP)"
-	@echo "    make run-all     — all 8 scenarios (requires start-csp for run-5)"
-	@echo "    make report      — summarise findings from all results/"
-	@echo "    make clean       — remove results/ and corpus/ directories"
+	@echo "    make run-quick        — scenarios 1-4 back-to-back (no CSP)"
+	@echo "    make run-all          — all 8 scenarios (requires start-csp for run-5)"
+	@echo "    make report           — summarise findings from all results/"
+	@echo "    make coverage-report  — HTML coverage report via c8 (requires start-csp)"
+	@echo "    make clean            — remove results/ and corpus/ directories"
 	@echo ""
 	@echo "  Override durations:"
 	@echo "    DURATION_QUICK=2m DURATION_STANDARD=5m make run-quick"
@@ -148,6 +149,10 @@ run-all: run-1 run-2 run-3 run-4 run-5 run-6 run-7 run-8
 ## report: summarise all findings
 report:
 	@bash $(SCRIPTS)/10_report.sh
+
+## coverage-report: generate HTML coverage report from accumulated V8 data (requires start-csp)
+coverage-report:
+	@bash $(SCRIPTS)/11_coverage_report.sh
 
 ## clean: remove generated directories
 clean:
