@@ -76,6 +76,13 @@ func SeedFromSpec(
 	return added, nil
 }
 
+// SeedEntry generates one CorpusEntry for the given operation with randomised
+// parameters. Used by the sequence builder to create probe entries without
+// adding them to the corpus.
+func SeedEntry(method, pathPattern string, op *openapi3.Operation) (*CorpusEntry, error) {
+	return newEntryFromOperation(method, pathPattern, op, true)
+}
+
 // newEntryFromOperation builds one CorpusEntry for the given operation by
 // generating random parameter values through generateInput.GenerateRandomDataModels.
 func newEntryFromOperation(
