@@ -61,23 +61,27 @@ ok "Coverage JSON: ${SIZE} bytes"
 
 # -----------------------------------------------------------------------
 # 4. Copy JSON into container and run c8
+#
+# The juice-shop image has no /bin/sh, so all docker exec calls use exec
+# form (no shell). node/npm live at /nodejs/bin/; c8 is installed globally
+# there by the Dockerfile. Working directory is set with -w flag.
 # -----------------------------------------------------------------------
 echo "Generating HTML report inside container ${CONTAINER} ..."
-docker exec "${CONTAINER}" mkdir -p /tmp/v8cov
+
+# Create temp dirs via node (no mkdir in image).
+docker exec "${CONTAINER}" /nodejs/bin/node \
+    -e "const fs=require('fs'); fs.mkdirSync('/tmp/v8cov',{recursive:true}); fs.rmSync('/tmp/cov-report',{recursive:true,force:true})"
+
 docker cp "${TMP_JSON}" "${CONTAINER}:/tmp/v8cov/coverage-0.json"
 rm -f "${TMP_JSON}"
 
-docker exec "${CONTAINER}" sh -c '
-    cd /juice-shop
-    rm -rf /tmp/cov-report
-    c8 report \
-        --temp-dir   /tmp/v8cov \
+docker exec -w /juice-shop "${CONTAINER}" \
+    /nodejs/bin/c8 report \
+        --temp-dir    /tmp/v8cov \
         --reports-dir /tmp/cov-report \
-        --reporter   html \
-        --reporter   text \
-        --src        /juice-shop/build \
-        2>&1
-'
+        --reporter    html \
+        --reporter    text \
+        --src         /juice-shop/build
 
 # -----------------------------------------------------------------------
 # 5. Copy report out of container
