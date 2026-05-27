@@ -100,15 +100,17 @@ else
 fi
 
 # -----------------------------------------------------------------------
-# 6. Download OpenAPI spec
+# 6. Validate OpenAPI spec (juice-shop exposes only a 1-path B2B spec via
+#    /api-docs; the full REST API spec ships with the example directory)
 # -----------------------------------------------------------------------
-step "Downloading OpenAPI spec from ${JUICE_URL}/api-docs..."
-if [ -f "${SPEC_FILE}" ]; then
-    ok "Spec file already exists: ${SPEC_FILE}"
+step "Checking OpenAPI spec: ${SPEC_FILE}..."
+if [ -f "${SPEC_FILE}" ] && python3 -c "import json,sys; json.load(open('${SPEC_FILE}'))" 2>/dev/null; then
+    PATHS=$(python3 -c "import json; spec=json.load(open('${SPEC_FILE}')); print(len(spec.get('paths',{})))")
+    ok "Spec OK: ${SPEC_FILE} (${PATHS} paths)"
 else
-    curl -s "${JUICE_URL}/api-docs" -o "${SPEC_FILE}"
-    LINES=$(wc -l < "${SPEC_FILE}")
-    ok "Spec saved to ${SPEC_FILE} (${LINES} lines)"
+    echo "WARN: Spec file missing or invalid — expected at: ${SPEC_FILE}"
+    echo "      The comprehensive Juice Shop spec ships with the example directory."
+    echo "      Run: git checkout HEAD -- juice-shop.openapi.json"
 fi
 
 # -----------------------------------------------------------------------

@@ -31,19 +31,19 @@ for scenario_dir in "${RESULTS_BASE}"/*/; do
 
     for f in "${scenario_dir}/findings/"*.json; do
         [ -f "$f" ] || continue
-        ((total++))
-        sev=$(grep -o '"severity":"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
+        total=$((total + 1))
+        sev=$(grep -oE '"severity": *"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
         case "$sev" in
-            high)   ((high++)) ;;
-            medium) ((med++))  ;;
-            low)    ((low++))  ;;
+            high)   high=$((high + 1))   ;;
+            medium) med=$((med + 1))     ;;
+            low)    low=$((low + 1))     ;;
         esac
     done
 
-    ((TOTAL_FINDINGS+=total))
-    ((TOTAL_HIGH+=high))
-    ((TOTAL_MED+=med))
-    ((TOTAL_LOW+=low))
+    TOTAL_FINDINGS=$((TOTAL_FINDINGS + total))
+    TOTAL_HIGH=$((TOTAL_HIGH + high))
+    TOTAL_MED=$((TOTAL_MED + med))
+    TOTAL_LOW=$((TOTAL_LOW + low))
 
     COLOR="${NC}"
     [ "$high" -gt 0 ] && COLOR="${RED}"
@@ -64,12 +64,12 @@ echo -e "${BOLD}By checker:${NC}"
 declare -A CHECKER_COUNT
 for f in "${RESULTS_BASE}"/**/findings/*.json; do
     [ -f "$f" ] || continue
-    checker=$(grep -o '"checker":"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
+    checker=$(grep -oE '"checker": *"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
     [ -n "$checker" ] && CHECKER_COUNT["$checker"]=$(( ${CHECKER_COUNT["$checker"]:-0} + 1 ))
 done
 for checker in "${!CHECKER_COUNT[@]}"; do
     printf "  %-35s %d\n" "$checker" "${CHECKER_COUNT[$checker]}"
-done | sort -t' ' -k2 -rn
+done | sort -t' ' -k2 -rn || true
 
 # -----------------------------------------------------------------------
 # High-severity findings detail
@@ -79,7 +79,7 @@ if [ "$TOTAL_HIGH" -gt 0 ]; then
     echo -e "${BOLD}${RED}High-severity findings:${NC}"
     for f in "${RESULTS_BASE}"/**/findings/*.json; do
         [ -f "$f" ] || continue
-        sev=$(grep -o '"severity":"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
+        sev=$(grep -oE '"severity": *"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
         [ "$sev" = "high" ] || continue
 
         if command -v jq &>/dev/null; then
@@ -114,7 +114,7 @@ if [ "$TOTAL_FINDINGS" -gt 0 ]; then
     echo ""
     echo -e "${BOLD}Reproducing a finding manually:${NC}"
     # Pick the first high-sev finding, or any finding.
-    SAMPLE=$(find "${RESULTS_BASE}" -path "*/findings/*.json" 2>/dev/null | head -1)
+    SAMPLE=$(find "${RESULTS_BASE}" -path "*/findings/*.json" 2>/dev/null | head -1 || true)
     if [ -n "$SAMPLE" ] && command -v jq &>/dev/null; then
         METHOD=$(jq -r '.method' "$SAMPLE")
         URL=$(jq -r '.url' "$SAMPLE")

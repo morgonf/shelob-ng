@@ -11,10 +11,12 @@
 # error messages or reflected content that indicates exploitation.
 #
 # Payload files used:
-#   sqli.txt  — SQL injection (boolean, union, error, time-based, NoSQL)
-#   xss.txt   — Cross-site scripting (reflected, DOM, filter bypass)
-#   ssti.txt  — Server-side template injection (Jinja2, Twig, Handlebars)
+#   sqli.txt  — SQL injection (boolean, union, error, time-based, auth bypass)
+#   xss.txt   — Cross-site scripting (polyglots, reflected, DOM, filter bypass)
+#   ssti.txt  — Server-side template injection (Jinja2, Twig, Handlebars, ERB)
 #   lfi.txt   — Local file inclusion / path traversal
+#   nosql.txt — NoSQL injection (MongoDB operators)
+#   cmdi.txt  — Command injection (shell metacharacters, unix commands)
 #
 # Findings:
 #   BehavioralPatterns (medium) — reflected XSS, SQL error text, stack trace
@@ -30,12 +32,12 @@ OUT="${RESULTS_BASE}/04_payloads"
 mkdir -p "${OUT}"
 
 # Combine all payload categories into one -payloads flag value.
-PAYLOAD_FLAG="sqli=${PAYLOADS_SQLI},xss=${PAYLOADS_XSS},ssti=${PAYLOADS_SSTI},lfi=${PAYLOADS_LFI}"
+PAYLOAD_FLAG="sqli=${PAYLOADS_SQLI},xss=${PAYLOADS_XSS},ssti=${PAYLOADS_SSTI},lfi=${PAYLOADS_LFI},nosql=${PAYLOADS_NOSQL},cmdi=${PAYLOADS_CMDI}"
 
 echo "=== Scenario 4: Security payload injection ==="
 echo "  Target:   ${JUICE_URL}"
 echo "  User:     ${FUZZER_USER}"
-echo "  Payloads: sqli, xss, ssti, lfi"
+echo "  Payloads: sqli, xss, ssti, lfi, nosql, cmdi"
 echo "  Duration: ${DURATION_STANDARD}"
 echo "  Output:   ${OUT}/"
 echo ""

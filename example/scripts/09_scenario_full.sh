@@ -6,6 +6,7 @@
 #   - BOLA detection (second user for NameSpaceRule replay)
 #   - Security payloads (SQLi, XSS, SSTI, LFI wordlists)
 #   - Corpus persistence (corpus saved and used across runs)
+#   - Coverage feedback via CSP sidecar (requires make start-csp)
 #   - All 6 checkers enabled
 #   - Stateful CRUD sequences (runs every 20 requests)
 #
@@ -32,13 +33,14 @@ OUT="${RESULTS_BASE}/08_full"
 CORP="${CORPUS_DIR}/full"
 mkdir -p "${OUT}" "${CORP}"
 
-PAYLOAD_FLAG="sqli=${PAYLOADS_SQLI},xss=${PAYLOADS_XSS},ssti=${PAYLOADS_SSTI},lfi=${PAYLOADS_LFI}"
+PAYLOAD_FLAG="sqli=${PAYLOADS_SQLI},xss=${PAYLOADS_XSS},ssti=${PAYLOADS_SSTI},lfi=${PAYLOADS_LFI},nosql=${PAYLOADS_NOSQL},cmdi=${PAYLOADS_CMDI}"
 
 echo "=== Scenario 8: Full mode ==="
 echo "  Target:   ${JUICE_URL}"
+echo "  CSP:      ${CSP_URL}"
 echo "  User1:    ${FUZZER_USER}"
 echo "  User2:    ${VICTIM_USER}"
-echo "  Payloads: sqli, xss, ssti, lfi"
+echo "  Payloads: sqli, xss, ssti, lfi, nosql, cmdi"
 echo "  Checkers: all"
 echo "  Corpus:   ${CORP}/"
 echo "  Duration: ${DURATION_FULL}"
@@ -55,6 +57,7 @@ printf "    -password   %s \\\\\n" "${FUZZER_PASS}"
 printf "    -user2      %s \\\\\n" "${VICTIM_USER}"
 printf "    -pass2      %s \\\\\n" "${VICTIM_PASS}"
 printf "    -payloads   %s \\\\\n" "${PAYLOAD_FLAG}"
+printf "    -csp-url    %s \\\\\n" "${CSP_URL}"
 printf "    -corpus-dir %s \\\\\n" "${CORP}"
 printf "    -duration   %s \\\\\n" "${DURATION_FULL}"
 printf "    -output     %s \\\\\n" "${OUT}"
@@ -69,6 +72,7 @@ printf "\n"
     -user2      "${VICTIM_USER}" \
     -pass2      "${VICTIM_PASS}" \
     -payloads   "${PAYLOAD_FLAG}" \
+    -csp-url    "${CSP_URL}" \
     -corpus-dir "${CORP}" \
     -duration   "${DURATION_FULL}" \
     -output     "${OUT}" \
