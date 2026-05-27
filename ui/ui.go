@@ -64,6 +64,10 @@ type Logger struct {
 	s4xx       int64
 	s5xx       int64
 
+	// API spec coverage: updated by UpdateOps()
+	opsVisited int
+	opsTotal   int
+
 	startTime time.Time
 	lastPrint time.Time
 }
@@ -81,6 +85,15 @@ func New(w io.Writer, noColor bool) *Logger {
 		startTime: time.Now(),
 		lastPrint: time.Now(),
 	}
+}
+
+// UpdateOps updates the API spec coverage counters shown in status lines.
+// Call after each Mark() to keep the display current.
+func (l *Logger) UpdateOps(visited, total int) {
+	l.mu.Lock()
+	l.opsVisited = visited
+	l.opsTotal = total
+	l.mu.Unlock()
 }
 
 // Start prints the INFO: preamble and the initial INITED status line.
@@ -179,11 +192,17 @@ func (l *Logger) Done() {
 		rps = float64(l.n) / s
 	}
 
+	opsStr := ""
+	if l.opsTotal > 0 {
+		pct := 100 * l.opsVisited / l.opsTotal
+		opsStr = fmt.Sprintf("  ops: %d/%d (%d%%)", l.opsVisited, l.opsTotal, pct)
+	}
+
 	fmt.Fprintln(l.out)
 	tag := l.colorize(ansiCyan+ansiBold, "DONE")
 	fmt.Fprintf(l.out,
-		"%s    #%-8d cov: %5d  corpus: %5d  req/s: %5.1f  findings: %3d  elapsed: %v\n",
-		tag, l.n, l.coverage, l.corpusSize, rps, l.findings,
+		"%s    #%-8d cov: %5d  corpus: %5d%s  req/s: %5.1f  findings: %3d  elapsed: %v\n",
+		tag, l.n, l.coverage, l.corpusSize, opsStr, rps, l.findings,
 		elapsed.Round(time.Second),
 	)
 }
@@ -205,10 +224,15 @@ func (l *Logger) emit(event, eventColor, extra string) {
 	evPadded := fmt.Sprintf("%-8s", event)
 	evStr := l.colorize(eventColor, evPadded)
 
+	opsStr := ""
+	if l.opsTotal > 0 {
+		opsStr = fmt.Sprintf("  ops: %3d/%-3d", l.opsVisited, l.opsTotal)
+	}
+
 	fmt.Fprintf(l.out,
-		"%s %s cov: %5d  corpus: %5d  req/s: %5d  2xx: %5d  4xx: %5d  5xx: %5d%s\n",
+		"%s %s cov: %5d  corpus: %5d%s  req/s: %5d  2xx: %5d  4xx: %5d  5xx: %5d%s\n",
 		nStr, evStr,
-		l.coverage, l.corpusSize, rps,
+		l.coverage, l.corpusSize, opsStr, rps,
 		l.s2xx, l.s4xx, l.s5xx,
 		extra,
 	)

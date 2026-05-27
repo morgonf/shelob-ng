@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"shelob-ng/apicov"
 	"shelob-ng/auth"
 	"shelob-ng/checkers"
 	"shelob-ng/cliArgs"
@@ -136,6 +137,9 @@ func Run() {
 	// Output directory.
 	logging.CreateDir(cfg.OutputDir)
 
+	// API spec coverage tracker: records which spec operations were exercised.
+	opTracker := apicov.NewTracker(spec)
+
 	// Status display: libfuzzer-style event-driven output.
 	display := ui.New(nil, cfg.NoColor)
 	checkerNames := make([]string, len(activeCheckers))
@@ -198,6 +202,11 @@ func Run() {
 			continue
 		}
 
+		// Mark this operation as visited (any HTTP response counts).
+		opTracker.Mark(mutated.Method, mutated.PathPattern)
+		opsVisited, opsTotal := opTracker.Stats()
+		display.UpdateOps(opsVisited, opsTotal)
+
 		// Dump coverage after the request.
 		snap, err := covClient.Dump(context.Background())
 		if err != nil {
@@ -237,6 +246,15 @@ func Run() {
 	}
 
 	display.Done()
+
+	// Print and save API spec coverage summary.
+	opTracker.Print(os.Stdout)
+	covPath := filepath.Join(cfg.OutputDir, "api-coverage.json")
+	if err := opTracker.SaveJSON(covPath); err != nil {
+		log.Warnf("api-coverage: save %s: %v", covPath, err)
+	} else {
+		fmt.Printf("API coverage report: %s\n", covPath)
+	}
 
 	// Persist corpus if a directory was configured.
 	if cfg.CorpusDir != "" {
