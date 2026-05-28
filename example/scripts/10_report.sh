@@ -190,8 +190,8 @@ echo "---"
 echo ""
 echo "## API spec coverage"
 echo ""
-echo "| Scenario | Reached | Total | % | Succeeded (2xx) |"
-echo "|---|---:|---:|---:|---:|"
+echo "| Scenario | Reached | Succeeded (2xx) | Unvisited | Total | % |"
+echo "|---|---:|---:|---:|---:|---:|"
 
 HAVE_COV=0
 for cov_file in "${RESULTS_BASE}"/*/api-coverage.json; do
@@ -206,28 +206,32 @@ with open(path) as f:
 total = d.get("total", 0)
 vis   = d.get("visited_count", 0)
 succ  = d.get("succeeded_count", 0)
+unvis = d.get("unvisited_count", total - vis)
 pct   = int(100 * vis / total) if total else 0
-print(f"| `{name}` | {vis} | {total} | {pct}% | {succ} |")
+print(f"| `{name}` | {vis} | {succ} | {unvis} | {total} | {pct}% |")
 PYEOF
 done
 
 if [ "$HAVE_COV" -eq 0 ]; then
-    echo "| — | — | — | — | — |"
+    echo "| — | — | — | — | — | — |"
 fi
 
-if [ "$HAVE_COV" -eq 1 ]; then
-    # Unvisited ops from last scenario
+# Unvisited operations per scenario
+if [ "$HAVE_COV" -gt 0 ]; then
     for cov_file in "${RESULTS_BASE}"/*/api-coverage.json; do
         [ -f "$cov_file" ] || continue
-        python3 - "$cov_file" << 'PYEOF'
+        scenario=$(basename "$(dirname "$cov_file")")
+        python3 - "$cov_file" "$scenario" << 'PYEOF'
 import json, sys
-with open(sys.argv[1]) as f:
+path, name = sys.argv[1], sys.argv[2]
+with open(path) as f:
     d = json.load(f)
 unvis = d.get("unvisited", [])
 if unvis:
-    print("\n**Unvisited operations:**\n")
-    for op in unvis:
-        print(f"- `{op['method']} {op['path']}`")
+    print(f"\n**`{name}` — not reached ({len(unvis)} operations):**\n")
+    for op in sorted(unvis, key=lambda o: (o['path'], o['method'])):
+        opid = f"  `{op['operationId']}`" if op.get('operationId') else ""
+        print(f"- `{op['method']:<8} {op['path']}`{opid}")
 PYEOF
     done
 fi
