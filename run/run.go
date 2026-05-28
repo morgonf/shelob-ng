@@ -22,9 +22,11 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"shelob-ng/apicov"
@@ -170,6 +172,21 @@ func Run() {
 		log.SetLevel(log.WarnLevel)
 	}
 
+	// Signal-aware context: SIGINT / SIGTERM cause a clean exit after the current
+	// iteration so that api-coverage.json and corpus are always saved.
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			log.Infof("run: received %s — stopping after current iteration", sig)
+			runCancel()
+		case <-runCtx.Done():
+		}
+	}()
+
 	// RPS rate limiter.
 	var ticker *time.Ticker
 	if cfg.RPS > 0 {
@@ -192,7 +209,7 @@ func Run() {
 	start := time.Now()
 	var seqTick int
 
-	for time.Since(start) < cfg.Duration {
+	for time.Since(start) < cfg.Duration && runCtx.Err() == nil {
 		if ticker != nil {
 			<-ticker.C
 		}
