@@ -45,9 +45,10 @@ func opKey(method, path string) string {
 // Tracker records which spec operations have received at least one HTTP
 // response and the distribution of observed status codes. Safe for concurrent use.
 type Tracker struct {
-	mu      sync.RWMutex
-	total   []Op
-	visited map[string]struct{}
+	mu        sync.RWMutex
+	total     []Op
+	visited   map[string]struct{} // any HTTP response received
+	succeeded map[string]struct{} // at least one 2xx response received
 	// codes maps opKey → status code → response count.
 	codes map[string]map[int]int
 }
@@ -78,18 +79,23 @@ func NewTracker(spec *openapi3.T) *Tracker {
 		return ops[i].Method < ops[j].Method
 	})
 	return &Tracker{
-		total:   ops,
-		visited: make(map[string]struct{}),
-		codes:   make(map[string]map[int]int),
+		total:     ops,
+		visited:   make(map[string]struct{}),
+		succeeded: make(map[string]struct{}),
+		codes:     make(map[string]map[int]int),
 	}
 }
 
 // Mark records that method+path received an HTTP response with the given status
-// code. Any HTTP response (including 4xx/5xx) counts as visited.
+// code. Any HTTP response (including 4xx/5xx) counts as visited; only 2xx
+// responses count as succeeded.
 func (t *Tracker) Mark(method, path string, statusCode int) {
 	key := opKey(method, path)
 	t.mu.Lock()
 	t.visited[key] = struct{}{}
+	if statusCode >= 200 && statusCode < 300 {
+		t.succeeded[key] = struct{}{}
+	}
 	if t.codes[key] == nil {
 		t.codes[key] = make(map[int]int)
 	}
@@ -97,11 +103,29 @@ func (t *Tracker) Mark(method, path string, statusCode int) {
 	t.mu.Unlock()
 }
 
-// Stats returns (visitedCount, totalCount).
+// HasSuccess reports whether the operation has received at least one 2xx response.
+// Used by run/ to detect the first successful exercise of a new API operation so
+// it can be admitted to the corpus even when CSP coverage delta is zero.
+func (t *Tracker) HasSuccess(method, path string) bool {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	_, ok := t.succeeded[opKey(method, path)]
+	return ok
+}
+
+// Stats returns (visitedCount, totalCount) where visited counts any HTTP response.
 func (t *Tracker) Stats() (visited, total int) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	return len(t.visited), len(t.total)
+}
+
+// SuccessStats returns (succeededCount, totalCount) where succeeded counts
+// operations that received at least one 2xx response.
+func (t *Tracker) SuccessStats() (succeeded, total int) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return len(t.succeeded), len(t.total)
 }
 
 // Visited returns operations that have been exercised, sorted by path+method,
@@ -144,7 +168,8 @@ func (t *Tracker) Unvisited() []Op {
 // Report is the JSON structure written by SaveJSON.
 type Report struct {
 	Total          int          `json:"total"`
-	VisitedCount   int          `json:"visited_count"`
+	VisitedCount   int          `json:"visited_count"`   // any HTTP response
+	SucceededCount int          `json:"succeeded_count"` // at least one 2xx
 	UnvisitedCount int          `json:"unvisited_count"`
 	Visited        []OpCoverage `json:"visited"`
 	Unvisited      []Op         `json:"unvisited"`
@@ -154,9 +179,11 @@ type Report struct {
 func (t *Tracker) SaveJSON(path string) error {
 	vis := t.Visited()
 	unvis := t.Unvisited()
+	succ, _ := t.SuccessStats()
 	r := Report{
 		Total:          len(t.total),
 		VisitedCount:   len(vis),
+		SucceededCount: succ,
 		UnvisitedCount: len(unvis),
 		Visited:        vis,
 		Unvisited:      unvis,
@@ -171,13 +198,16 @@ func (t *Tracker) SaveJSON(path string) error {
 // Print writes a human-readable summary to w.
 // Shows percentage, per-endpoint status-code distribution for visited ops,
 // and a list of unvisited operations.
+// "Reached" counts any HTTP response; "succeeded" counts only 2xx responses.
 func (t *Tracker) Print(w io.Writer) {
 	vis, total := t.Stats()
+	succ, _ := t.SuccessStats()
 	pct := 0.0
 	if total > 0 {
 		pct = 100 * float64(vis) / float64(total)
 	}
-	fmt.Fprintf(w, "\n=== API spec coverage: %d/%d operations (%.0f%%) ===\n", vis, total, pct)
+	fmt.Fprintf(w, "\n=== API spec coverage: %d/%d reached (%.0f%%), %d/%d succeeded (2xx) ===\n",
+		vis, total, pct, succ, total)
 
 	visited := t.Visited()
 	if len(visited) > 0 {

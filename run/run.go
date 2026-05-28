@@ -23,6 +23,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"shelob-ng/apicov"
@@ -162,6 +163,13 @@ func Run() {
 		defer ticker.Stop()
 	}
 
+	// Checker goroutine pool: checkers run asynchronously so their probe
+	// requests don't block the main fuzzing loop. The semaphore caps
+	// outstanding goroutines to avoid unbounded memory/connection growth.
+	const checkerConcurrency = 8
+	checkerSem := make(chan struct{}, checkerConcurrency)
+	var checkerWg sync.WaitGroup
+
 	start := time.Now()
 	var seqTick int
 
@@ -202,6 +210,11 @@ func Run() {
 			continue
 		}
 
+		// Detect the first 2xx for this operation BEFORE marking so we can use
+		// it as a corpus admission signal (see below).
+		isFirstSuccess := resp.StatusCode >= 200 && resp.StatusCode < 300 &&
+			!opTracker.HasSuccess(mutated.Method, mutated.PathPattern)
+
 		// Mark this operation as visited (any HTTP response counts).
 		opTracker.Mark(mutated.Method, mutated.PathPattern, resp.StatusCode)
 		opsVisited, opsTotal := opTracker.Stats()
@@ -213,11 +226,23 @@ func Run() {
 			log.Debugf("run: CSP dump: %v", err)
 		}
 
+		// Determine the effective delta used for corpus admission:
+		//   - Primary signal: CSP code coverage delta (new basic blocks since reset).
+		//   - Fallback signal: first 2xx for this API operation. Ensures the corpus
+		//     grows based on API-level novelty even when CSP is disabled or returns 0.
+		//     A synthetic delta of 1 is enough to pass corpus.Add's delta>0 guard;
+		//     the entry gets minimum weight and will be superseded by higher-delta
+		//     entries once the same endpoint produces real coverage data.
+		delta := snap.Delta()
+		if isFirstSuccess && delta == 0 {
+			delta = 1
+		}
+
 		// Add to corpus if coverage increased. Only entries actually stored
 		// contribute to the displayed cov counter so NEW lines are not emitted
 		// for duplicate mutations that were rejected by the dedup filter.
-		mutated.CoverageDelta = snap.Delta()
-		added := mgr.Add(mutated, snap.Delta())
+		mutated.CoverageDelta = delta
+		added := mgr.Add(mutated, delta)
 
 		effectiveDelta := 0
 		if added {
@@ -230,13 +255,27 @@ func Run() {
 		// Update display after every request.
 		display.Request(resp.StatusCode, effectiveDelta, mgr.Size(), mutated.Method, mutated.PathPattern)
 
-		// Run all enabled checkers and persist findings.
+		// Run all enabled checkers concurrently. Each checker captures its own
+		// copies of the per-iteration values; the main loop is free to advance
+		// while probes are in flight.
 		for _, chk := range activeCheckers {
-			findings := chk.Check(context.Background(), checkCtx, mutated, req, resp, body)
-			for _, f := range findings {
-				logFinding(f, cfg.OutputDir)
-				display.Finding(f.Checker, f.Severity, f.Title, f.URL)
-			}
+			chk := chk
+			ent, r, rs, b := mutated, req, resp, body
+			outDir := cfg.OutputDir
+
+			checkerSem <- struct{}{} // acquire slot; blocks only if 8 goroutines already running
+			checkerWg.Add(1)
+			go func() {
+				defer func() {
+					<-checkerSem
+					checkerWg.Done()
+				}()
+				findings := chk.Check(context.Background(), checkCtx, ent, r, rs, b)
+				for _, f := range findings {
+					logFinding(f, outDir)
+					display.Finding(f.Checker, f.Severity, f.Title, f.URL)
+				}
+			}()
 		}
 
 		// Run one CRUD sequence every 20 requests to exercise stateful flows.
@@ -252,6 +291,8 @@ func Run() {
 		}
 	}
 
+	// Wait for all outstanding checker goroutines before printing DONE.
+	checkerWg.Wait()
 	display.Done()
 
 	// Print and save API spec coverage summary.
