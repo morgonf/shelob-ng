@@ -136,8 +136,8 @@ shelob-ng/
 │   ├── csp.go                cspClient: Reset/Dump HTTP calls
 │   └── noop.go               noopClient: used when CSP disabled
 ├── checkers/
-│   ├── checker.go            Finding struct (+ PathPattern, POC, DedupeKey)
-│   ├── poc.go                BuildCurlPOC: generate curl reproduction command
+│   ├── checker.go            Finding struct (+ PathPattern, POC, DedupeKey); CheckContext (+ APIKey, Token)
+│   ├── poc.go                BuildCurlPOC: generate curl reproduction command; ApplyAuth: set auth headers on probe requests
 │   ├── behavioral.go         regex patterns: SQL/XSS/LFI/SSTI/stacktrace
 │   ├── invaliddyn.go         boundary path params → 5xx detection
 │   ├── useafterfree.go       DELETE 2xx → GET 2xx detection
@@ -149,7 +149,7 @@ shelob-ng/
 │   ├── sequence.go           Runner.Run: stateful multi-step execution
 │   └── replay.go             SaveReplay: persist steps + findings to JSON
 ├── request/
-│   └── from_entry.go         build *http.Request from CorpusEntry
+│   └── from_entry.go         build *http.Request from CorpusEntry; ApplyAuth: set Bearer/API-key headers
 ├── apicov/
 │   └── apicov.go             per-operation reached/succeeded counters
 ├── auth/                     cookie login + token extraction from body
@@ -192,12 +192,20 @@ go build -o shelob-ng .
     -user user1@example.com -password pass1 \
     -user2 user2@example.com -pass2 pass2
 
-# 5. Coverage-guided (requires CSP sidecar on the target)
+# 5. API key authentication (sets X-Api-Key header on every request)
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -apikey your-api-key-here
+
+# 6. Bearer token authentication (sets Authorization: Bearer … header)
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -token eyJhbGciOiJSUzI1NiJ9...
+
+# 7. Coverage-guided (requires CSP sidecar on the target)
 ./shelob-ng -spec openapi.json -url http://localhost:3000 \
     -csp-url http://localhost:8080 \
     -corpus-dir ./corpus -duration 4h
 
-# 6. Full — everything enabled
+# 8. Full — everything enabled
 ./shelob-ng -spec openapi.json -url http://localhost:3000 \
     -user user1@example.com -password pass1 \
     -user2 user2@example.com -pass2 pass2 \
@@ -365,6 +373,37 @@ Run a targeted subset of checkers to reduce noise or focus on a class of bugs:
 
 ---
 
+### Scenario I — API key or Bearer token authentication
+
+Use when the target API uses a static API key or a pre-obtained Bearer token
+instead of cookie-based login. Both flags apply the credential to every request,
+including all checker probe requests.
+
+```bash
+# API key — sets X-Api-Key: <key> on every request
+./shelob-ng -spec openapi.json -url http://api.corp.local \
+    -apikey sk-prod-a3f9b2c1d8e7... \
+    -duration 2h -output ./results
+
+# Bearer token — sets Authorization: Bearer <token> on every request
+./shelob-ng -spec openapi.json -url http://api.corp.local \
+    -token eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9... \
+    -duration 2h -output ./results
+
+# Combined: static token + BOLA detection with a second user session
+./shelob-ng -spec openapi.json -url http://api.corp.local \
+    -token <admin-token> \
+    -user2 regular@corp.local -pass2 pass \
+    -duration 2h -output ./results
+```
+
+Note: `-user`/`-password` (cookie login) and `-apikey`/`-token` can be combined —
+the fuzzer will both attempt cookie login and set the static header.
+The anonymous probe inside `NameSpaceRule` strips all auth headers and cookies
+to ensure it is genuinely unauthenticated.
+
+---
+
 ### Scenario H — Rate-limited target
 
 Use `-rps N` to cap throughput. The rate limiter applies to main-loop
@@ -524,14 +563,17 @@ that reproduces the issue.
 │    Finding: probe returns 5xx  →  MEDIUM (no input validation)      │
 │                                                                     │
 │  LeakageRule                                                        │
-│    Trigger: POST returned 4xx (server rejected the request)         │
+│    Trigger: POST returned 4xx — except 401/403 (auth rejection      │
+│             means the request never reached application logic        │
+│             and cannot have committed partial state)                 │
 │    Probe:   GET same URL with auth cookies                          │
 │    Finding: GET returns 2xx  →  MEDIUM (partial state committed)    │
 │                                                                     │
 │  NameSpaceRule  (requires -user2 / -pass2)                          │
 │    Trigger: any request returned 2xx for user1                      │
-│    Probe 1: anonymous probe (no cookies) — if 2xx, skip (public)    │
-│    Probe 2: replay with user2 cookies                               │
+│    Probe 1: anonymous probe — strips all auth (cookies, token,       │
+│             API key); if 2xx, endpoint is public → skip             │
+│    Probe 2: replay with user2 cookies only (no static auth headers) │
 │    Finding: user2 also 2xx  →  HIGH (BOLA / IDOR)                  │
 │                                                                     │
 │  SchemaViolation                                                    │
@@ -734,8 +776,8 @@ The difference reveals endpoints that are unreachable or crash on every input.
 | `-password` | | Password for primary user |
 | `-user2` | | Second user for `NameSpaceRule` (BOLA) |
 | `-pass2` | | Password for second user |
-| `-apikey` | | API key header value |
-| `-token` | | Bearer token |
+| `-apikey` | | Static API key — sets `X-Api-Key: <value>` on every request |
+| `-token` | | Static Bearer token — sets `Authorization: Bearer <value>` on every request |
 | `-output` | `fuzzer_output` | Output directory for findings and replays |
 | `-duration` | `1h` | Fuzzing duration (`30m`, `2h`, `24h`, …) |
 | `-rps` | `0` | Requests per second cap (0 = unlimited) |
@@ -789,8 +831,8 @@ its coverage weight. The `bitmap` field is optional and currently unused.
 | Situation | Recommendation |
 |-----------|---------------|
 | Black-box target, no source access | `-csp-disable` (pure random) |
-| Node.js / Express target | Use `adapters/nodejs/adapter.js` |
-| Go target | Use `adapters/go/adapter.go` (runtime/coverage, Go 1.20+) |
+| Node.js / Express target | Use `adapters/nodejs/adapter.js` (V8 Inspector, production-ready) |
+| Go target | Use `adapters/go/adapter.go` (`runtime/coverage` + `ClearCounters`, Go 1.21+) |
 | Python / Flask target | Use `adapters/python/adapter.py` (coverage.py) |
 | C / C++ target | Use `adapters/c/adapter.c` (gcov + libmicrohttpd) |
 | Maximum speed, known wordlists | Pure random + `-payloads` |
@@ -899,7 +941,11 @@ DONE  #8423  cov: 51204  corpus: 1831  ops: 93/95 (97%)  req/s: 27.4  findings: 
 | `SchemaViolation` | 74 | Response body missing declared fields |
 | `BehavioralPatterns` | 55 | Node.js stack traces in 500 responses |
 | `InvalidDynamicObject` | 20 | Server crash on `DELETE /api/Addresss/` |
-| `LeakageRule` | 5 | Public collection accessible after auth-required POST |
+| `LeakageRule` | 0–2 | POST 400/422 (validation failure) leaves readable state |
+
+`LeakageRule` no longer fires on 401/403 responses — those indicate the request
+never reached application logic. On a well-designed API, `LeakageRule` fires only
+when a genuinely rejected POST (400/422) creates a resource accessible via GET.
 
 **High-severity finding:**
 
@@ -1002,6 +1048,17 @@ func All() []Checker {
         MyChecker{},  // add here
     }
 }
+```
+
+3. If your checker issues additional probe requests, apply auth so probes carry
+   the same credentials as the main fuzzing requests:
+
+```go
+probe, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+for _, c := range cctx.AuthCookies {
+    probe.AddCookie(c)
+}
+ApplyAuth(probe, cctx.APIKey, cctx.Token)  // sets Authorization: Bearer or X-Api-Key
 ```
 
 ### Adding a CSP adapter
