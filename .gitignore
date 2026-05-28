@@ -1,0 +1,31 @@
+# Build output
+shelob-ng
+shelob-ng.exe
+
+# Go toolchain
+*.test
+*.out
+coverage.out
+coverage.html
+
+# Runtime output
+fuzzer_output/
+results/
+corpus/
+*.log
+
+# Example runtime artefacts (generated during make setup / make run-*)
+example/results/
+example/corpus/
+example/fuzzer_output/
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

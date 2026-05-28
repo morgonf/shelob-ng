@@ -1,21 +1,27 @@
 # shelob-ng
 
-Coverage-guided REST API fuzzer based on [Shelob](../shelob/), extended with:
+Coverage-guided REST API security fuzzer. Reads an OpenAPI 3.x spec, generates
+and mutates HTTP requests, and runs a suite of security checkers on every
+response — all without modifying or recompiling the target application.
 
-- **AFL-style corpus** — inputs that increase code coverage are saved, weighted, and mutated
-- **Three mutation strategies** — structural (type-aware), byte-level (bit/byte flips), security payloads (SQLi/XSS wordlists)
-- **Coverage Sidecar Protocol (CSP)** — language-agnostic HTTP endpoint for coverage feedback from any target
-- **Six security checkers** — modular detectors inspired by RESTler
-- **Stateful CRUD sequences** — automatically built from the OpenAPI spec, detect UseAfterFree and BOLA
+```
+INFO: spec: juice-shop.openapi.json       target: http://localhost:3000
+INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterFree InvalidDynamicObject LeakageRule NameSpaceRule SchemaViolation
+
+#0       INITED   cov:     0  corpus:   171  ops:   0/95   req/s:     0  2xx:     0  4xx:     0  5xx:     0
+#8       NEW      cov:    52  corpus:   179  ops:   8/95   req/s:    24  2xx:     2  4xx:     5  5xx:     1  [POST /api/SecurityAnswers  +18]
+#64      FINDING  cov:   831  corpus:   214  ops:  52/95   req/s:    27  2xx:    22  4xx:    29  5xx:    13  [BehavioralPatterns/high] SQL Error Leakage  http://localhost:3000/rest/products/search?q=%00
+#128     NEW      cov:  1204  corpus:   231  ops:  71/95   req/s:    28  2xx:    51  4xx:    59  5xx:    18  [GET /rest/products/search  +6]
+```
 
 ---
 
 ## Table of contents
 
-1. [Quick start](#quick-start)
-2. [Juice Shop guide](#juice-shop-guide) ← ready-to-run instructions
-3. [Architecture](#architecture)
-4. [Fuzzing loop](#fuzzing-loop)
+1. [Features](#features)
+2. [Architecture](#architecture)
+3. [Quick start](#quick-start)
+4. [Usage scenarios](#usage-scenarios)
 5. [Corpus and selection](#corpus-and-selection)
 6. [Mutation strategies](#mutation-strategies)
 7. [Security checkers](#security-checkers)
@@ -23,509 +29,573 @@ Coverage-guided REST API fuzzer based on [Shelob](../shelob/), extended with:
 9. [Status display](#status-display)
 10. [Output format](#output-format)
 11. [All flags](#all-flags)
-12. [Coverage Sidecar Protocol](#coverage-sidecar-protocol)
+12. [Coverage Sidecar Protocol (CSP)](#coverage-sidecar-protocol)
+13. [Example: OWASP Juice Shop](#example-owasp-juice-shop)
 
 ---
 
-## Quick start
+## Features
 
-```bash
-# Build
-go build -o shelob-ng .
-
-# Pure-random mode — no target instrumentation required
-./shelob-ng -spec openapi.json -url http://localhost:3000
-
-# With authentication and BOLA detection
-./shelob-ng -spec openapi.json -url http://localhost:3000 \
-    -user admin@juice-sh.op -password admin123 \
-    -user2 user@juice-sh.op -pass2 password
-
-# With security payload wordlists
-./shelob-ng -spec openapi.json -url http://localhost:3000 \
-    -payloads sqli=/tmp/sqli.txt,xss=/tmp/xss.txt \
-    -duration 30m -output ./results
-
-# Coverage-guided mode (requires CSP adapter on the target)
-./shelob-ng -spec openapi.json -url http://localhost:3000 \
-    -csp-url http://localhost:8080
-```
-
----
-
-## Juice Shop guide
-
-[OWASP Juice Shop](https://github.com/juice-shop/juice-shop) is the canonical
-vulnerable Node.js application used for security training. This guide walks
-through running shelob-ng against it end-to-end.
-
-### Step 1 — Start Juice Shop
-
-**Option A: Docker (recommended)**
-```bash
-docker pull bkimminich/juice-shop
-docker run -d --name juice-shop -p 3000:3000 bkimminich/juice-shop
-```
-
-**Option B: Node.js**
-```bash
-git clone https://github.com/juice-shop/juice-shop
-cd juice-shop
-npm install
-npm start
-# Juice Shop listens on http://localhost:3000
-```
-
-Verify it is running:
-```bash
-curl -s http://localhost:3000/rest/admin/application-configuration | head -c 80
-# Should return JSON, not a connection error
-```
-
-### Step 2 — Get the OpenAPI spec
-
-Juice Shop ships a Swagger spec at the `/api-docs` endpoint:
-```bash
-curl http://localhost:3000/api-docs -o juice-shop.openapi.json
-```
-
-Alternatively, the community maintains a maintained copy at:
-`https://github.com/OWASP/www-project-juice-shop/blob/master/docs/api_specs/`
-
-### Step 3 — Create test accounts
-
-Juice Shop has a `/api/Users` registration endpoint. Create two accounts
-(one for fuzzing, one for BOLA testing):
-
-```bash
-# Account 1 — primary fuzzer user
-curl -s -X POST http://localhost:3000/api/Users \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"fuzzer@test.local","password":"Fuzzer1!","passwordRepeat":"Fuzzer1!","securityQuestion":{"id":1,"question":"Your eldest siblings middle name?"},"securityAnswer":"test"}' \
-  | python3 -m json.tool
-
-# Account 2 — second user for BOLA detection
-curl -s -X POST http://localhost:3000/api/Users \
-  -H 'Content-Type: application/json' \
-  -d '{"email":"victim@test.local","password":"Victim1!","passwordRepeat":"Victim1!","securityQuestion":{"id":1,"question":"Your eldest siblings middle name?"},"securityAnswer":"test"}' \
-  | python3 -m json.tool
-```
-
-### Step 4 — (Optional) Prepare payload wordlists
-
-```bash
-mkdir -p /tmp/payloads
-
-# SQL injection payloads
-cat > /tmp/payloads/sqli.txt << 'EOF'
-' OR '1'='1
-' OR 1=1--
-'; DROP TABLE users;--
-1' ORDER BY 1--
-1 UNION SELECT null,null,null--
-admin'--
-EOF
-
-# XSS payloads
-cat > /tmp/payloads/xss.txt << 'EOF'
-<script>alert(1)</script>
-"><img src=x onerror=alert(1)>
-javascript:alert(document.cookie)
-<svg onload=alert(1)>
-EOF
-```
-
-### Step 5 — Run shelob-ng
-
-**Minimal run (30 minutes, no auth):**
-```bash
-./shelob-ng \
-  -spec juice-shop.openapi.json \
-  -url http://localhost:3000 \
-  -duration 30m \
-  -output ./juice-results
-```
-
-**Full run with auth + BOLA detection + payloads:**
-```bash
-./shelob-ng \
-  -spec juice-shop.openapi.json \
-  -url http://localhost:3000 \
-  -user fuzzer@test.local \
-  -password "Fuzzer1!" \
-  -user2 victim@test.local \
-  -pass2 "Victim1!" \
-  -payloads sqli=/tmp/payloads/sqli.txt,xss=/tmp/payloads/xss.txt \
-  -duration 1h \
-  -output ./juice-results \
-  -corpus-dir ./juice-corpus
-```
-
-**Resume from saved corpus (faster second run):**
-```bash
-./shelob-ng \
-  -spec juice-shop.openapi.json \
-  -url http://localhost:3000 \
-  -user fuzzer@test.local \
-  -password "Fuzzer1!" \
-  -corpus-dir ./juice-corpus \
-  -duration 30m \
-  -output ./juice-results-2
-```
-
-### Step 6 — Expected terminal output
-
-```
-INFO: spec: juice-shop.openapi.json
-INFO: target: http://localhost:3000
-INFO: coverage: disabled (pure-random mode)
-INFO: corpus: 143 seed entries
-INFO: checkers: BehavioralPatterns UseAfterFree InvalidDynamicObject LeakageRule SchemaViolation
-
-#0      INITED   cov:     0  corpus:   143  req/s:     0  2xx:     0  4xx:     0  5xx:     0
-#1      pulse    cov:     0  corpus:   143  req/s:     1  2xx:     0  4xx:     1  5xx:     0
-#4      pulse    cov:     0  corpus:   143  req/s:     4  2xx:     2  4xx:     2  5xx:     0
-#32     pulse    cov:     0  corpus:   143  req/s:    27  2xx:    15  4xx:    17  5xx:     0
-#64     pulse    cov:     0  corpus:   143  req/s:    52  2xx:    31  4xx:    33  5xx:     0
-#128    FINDING  cov:     0  corpus:   143  req/s:    73  2xx:    64  4xx:    64  5xx:     0  [BehavioralPatterns/medium] Error message leaked in response  http://localhost:3000/api/Users/0
-#256    pulse    cov:     0  corpus:   143  req/s:    83  2xx:   128  4xx:   128  5xx:     0
-...
-DONE    #54000   cov:     0  corpus:   143  req/s:  14.9  findings:   7  elapsed: 1h0m2s
-```
-
-### Step 7 — Review findings
-
-```bash
-# List all findings
-ls -lh juice-results/findings/
-
-# Pretty-print one finding
-cat juice-results/findings/BehavioralPatterns_20260527_140523_000.json | python3 -m json.tool
-
-# Count by checker
-for f in juice-results/findings/*.json; do
-    python3 -c "import json,sys; d=json.load(open('$f')); print(d.get('checker',''))"
-done | sort | uniq -c | sort -rn
-
-# View sequence replay (if any CRUD sequences fired)
-ls juice-results/replays/
-cat juice-results/replays/CRUD__api_Users_*.json | python3 -m json.tool
-```
-
-### Known Juice Shop findings
-
-When running 1 hour against a default Juice Shop install, shelob-ng typically finds:
-
-| Checker | Finding | Severity |
-|---------|---------|---------|
-| `BehavioralPatterns` | SQL/Sequelize error text leaked in 500 responses | medium |
-| `BehavioralPatterns` | Stack trace in body on invalid inputs | medium |
-| `InvalidDynamicObject` | 500 response on `/api/Users/-1` | medium |
-| `SchemaViolation` | Response body does not match spec schema | low |
-| `LeakageRule` | Partial state after failed POST in some endpoints | medium |
+| Feature | Description |
+|---------|-------------|
+| **OpenAPI-guided** | Seeds corpus from spec; all 3.x parameter locations supported (path, query, header, cookie, body) |
+| **AFL-style corpus** | Inputs that increase code coverage are saved, weighted by delta, and preferentially mutated |
+| **Three mutators** | Structural (type-aware edge cases), byte-level (bit/byte flips), security payloads (external wordlists) |
+| **Six checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, SchemaViolation |
+| **BOLA / IDOR detection** | NameSpaceRule replays every 2xx request with a second-user session; cross-account access = finding |
+| **Stateful CRUD sequences** | Auto-derived from spec: create → read → delete → probe; detects server-side UseAfterFree |
+| **CSP coverage feedback** | Language-agnostic HTTP sidecar protocol; adapters for Node.js, Go, Python, C |
+| **Deduplication** | Each unique (checker, method, endpoint) generates exactly one finding file; stable across runs |
+| **POC generation** | Every finding contains a `curl` command that reproduces the issue |
+| **API coverage report** | Tracks reached (any response) and succeeded (2xx) per OpenAPI operation |
+| **Corpus persistence** | Save/load corpus to disk; resume long runs or share interesting inputs |
+| **Dynamic value pool** | Harvests real IDs and tokens from responses; reuses them as path parameters |
+| **RPS limiter** | Optional requests-per-second cap for rate-limited or production-adjacent targets |
+| **libfuzzer-style UI** | Event-driven terminal output: INITED / NEW / pulse / FINDING / DONE |
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         shelob-ng                           │
-│                                                             │
-│  ┌──────────┐    ┌───────────┐    ┌──────────────────────┐  │
-│  │ cliArgs/ │───▶│  run/     │◀───│ openapi/             │  │
-│  │ Config   │    │  Run()    │    │ ParseOpenapiSpec()    │  │
-│  └──────────┘    └─────┬─────┘    └──────────────────────┘  │
-│                        │                                     │
-│         ┌──────────────┼──────────────────────┐             │
-│         ▼              ▼                      ▼             │
-│  ┌─────────────┐ ┌──────────┐  ┌──────────────────────────┐ │
-│  │  corpus/    │ │mutator/  │  │  sequence/               │ │
-│  │  Corpus-    │ │Mutate()  │  │  BuildSequences()        │ │
-│  │  Manager   │ │          │  │  Runner.Run()             │ │
-│  │  Dynamic-  │ │structural│  └──────────────────────────┘ │
-│  │  ValuePool │ │bytelevel │                               │
-│  └─────────────┘ │security  │  ┌──────────────────────────┐ │
-│                  └──────────┘  │  checkers/               │ │
-│                                │  BehavioralPatterns      │ │
-│  ┌─────────────┐               │  UseAfterFree            │ │
-│  │ coverage/   │               │  InvalidDynamicObject    │ │
-│  │ CSP client  │               │  LeakageRule             │ │
-│  │ (or noop)   │               │  NameSpaceRule           │ │
-│  └─────────────┘               │  SchemaViolation         │ │
-│                                └──────────────────────────┘ │
-│  ┌─────────────┐  ┌──────────┐                              │
-│  │  request/   │  │   ui/    │                              │
-│  │ FromCorpus- │  │ Logger   │                              │
-│  │  Entry()    │  │ (libfuzz)│                              │
-│  └─────────────┘  └──────────┘                              │
-└─────────────────────────────────────────────────────────────┘
-         │                            │
-         ▼                            ▼
-  ┌──────────────┐            ┌──────────────┐
-  │  Target API  │            │ CSP sidecar  │
-  │  (any REST)  │            │ (optional)   │
-  └──────────────┘            └──────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              shelob-ng                                  │
+│                                                                         │
+│  ┌──────────┐  ┌──────────────────────────────────────────────────────┐ │
+│  │ cliArgs/ │  │                     run/Run()                        │ │
+│  │  Config  │─▶│                                                      │ │
+│  └──────────┘  │  ┌──────────┐    ┌───────────┐    ┌──────────────┐  │ │
+│                │  │ corpus/  │───▶│ mutator/  │───▶│  request/    │  │ │
+│  ┌──────────┐  │  │  Select()│    │  Mutate() │    │  FromCorpus  │  │ │
+│  │ openapi/ │  │  │  Add()   │    │           │    │  Entry()     │  │ │
+│  │  spec +  │─▶│  │  Pool    │    │structural │    └──────┬───────┘  │ │
+│  │  router  │  │  └────▲─────┘    │byte-level │           │          │ │
+│  └──────────┘  │       │          │security   │           ▼          │ │
+│                │       │          └───────────┘     http.Client      │ │
+│                │  ┌────┴──────┐                          │           │ │
+│                │  │ coverage/ │◀─── csp.Reset()          │           │ │
+│                │  │ CSP client│     csp.Dump()            ▼          │ │
+│                │  └───────────┘                     Target API       │ │
+│                │                                         │           │ │
+│                │  ┌──────────────────────────────────────┘           │ │
+│                │  │           response + body                        │ │
+│                │  ▼                                                  │ │
+│                │  ┌──────────────────────────────────────────────┐   │ │
+│                │  │  checkers/ (async goroutines, semaphore=8)   │   │ │
+│                │  │                                              │   │ │
+│                │  │  BehavioralPatterns  — body regex scan       │   │ │
+│                │  │  UseAfterFree        — DELETE → GET probe    │   │ │
+│                │  │  InvalidDynamicObject— boundary ID probes    │   │ │
+│                │  │  LeakageRule         — POST 4xx → GET probe  │   │ │
+│                │  │  NameSpaceRule       — user2 replay probe    │   │ │
+│                │  │  SchemaViolation     — OAS response validate │   │ │
+│                │  │                                              │   │ │
+│                │  │  finding → DedupeKey → logFinding (JSON+POC) │   │ │
+│                │  └──────────────────────────────────────────────┘   │ │
+│                │                                                      │ │
+│                │  ┌────────────┐   ┌──────────┐   ┌───────────────┐  │ │
+│                │  │ sequence/  │   │  apicov/ │   │     ui/       │  │ │
+│                │  │ CRUD runs  │   │ coverage │   │ libfuzz-style │  │ │
+│                │  │ every 20th │   │ tracker  │   │    Logger     │  │ │
+│                │  └────────────┘   └──────────┘   └───────────────┘  │ │
+│                └──────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
+        │  HTTP requests                  │  POST /csp/reset
+        ▼                                 │  GET  /csp/dump
+  ┌───────────────┐               ┌───────▼──────────┐
+  │  Target API   │               │   CSP sidecar    │
+  │  (any REST)   │               │   (optional)     │
+  └───────────────┘               └──────────────────┘
 ```
 
 ### Package map
 
 ```
-corpus/      CorpusEntry, weighted selection, DynamicValuePool, seed from spec
-mutator/     3 mutation strategies + weighted orchestration
-  payloads/  external payload file loader (SQLi, XSS, ...)
-coverage/    CSP HTTP client or no-op stub
-checkers/    6 stateless security checkers
-sequence/    stateful CRUD sequences: builder, runner, replay persistence
-request/     build *http.Request from CorpusEntry
-run/         main fuzzing loop
-cliArgs/     CLI flag parsing → Config struct
-ui/          libfuzzer-style terminal display
+shelob-ng/
+├── main.go                   entry point
+├── cliArgs/                  CLI flag parsing → Config struct
+├── openapi/                  spec loading, gorilla/mux router, seed input
+├── run/                      main fuzzing loop (Run function)
+├── corpus/
+│   ├── entry.go              CorpusEntry: fields, Hash(), Clone(), Weight()
+│   ├── corpus.go             weightedCorpus: Add/Select/evict (max 15 000)
+│   ├── selection.go          prefix-sum weighted random select O(log n)
+│   ├── pool.go               DynamicValuePool: ring buffer, 70/30 real/random
+│   ├── seed.go               SeedFromSpec: 3 entries per operation
+│   └── storage.go            Save/Load JSON corpus to disk
+├── mutator/
+│   ├── mutator.go            Mutator interface, weighted orchestration
+│   ├── structural.go         type-aware edge cases (string/int/float/body)
+│   ├── bytelevel.go          6 byte-level ops on raw body
+│   ├── security.go           inject payload strings into string fields
+│   ├── fieldpicker.go        pick field by location (body 2× weight)
+│   ├── jsonmutate.go         dotted-path JSON leaf access/mutation
+│   └── payloads/             external wordlist loader
+├── coverage/
+│   ├── coverage.go           Client interface, Config, Snapshot
+│   ├── csp.go                cspClient: Reset/Dump HTTP calls
+│   └── noop.go               noopClient: used when CSP disabled
+├── checkers/
+│   ├── checker.go            Finding struct (+ PathPattern, POC, DedupeKey)
+│   ├── poc.go                BuildCurlPOC: generate curl reproduction command
+│   ├── behavioral.go         regex patterns: SQL/XSS/LFI/SSTI/stacktrace
+│   ├── invaliddyn.go         boundary path params → 5xx detection
+│   ├── useafterfree.go       DELETE 2xx → GET 2xx detection
+│   ├── leakage.go            POST 4xx → GET 2xx detection
+│   ├── namespace.go          BOLA/IDOR: user2 replay
+│   └── schema.go             OpenAPI response validation (real body)
+├── sequence/
+│   ├── builder.go            derive CRUD sequences from spec paths
+│   ├── sequence.go           Runner.Run: stateful multi-step execution
+│   └── replay.go             SaveReplay: persist steps + findings to JSON
+├── request/
+│   └── from_entry.go         build *http.Request from CorpusEntry
+├── apicov/
+│   └── apicov.go             per-operation reached/succeeded counters
+├── auth/                     cookie login + token extraction from body
+├── ui/                       libfuzzer-style terminal Logger
+├── adapters/
+│   ├── nodejs/               V8 Inspector CSP adapter
+│   ├── go/                   runtime/coverage CSP adapter
+│   ├── python/               coverage.py CSP adapter
+│   └── c/                    gcov CSP adapter
+└── example/                  Juice Shop walkthrough (8 scenarios, Makefile)
 ```
 
 ---
 
-## Fuzzing loop
+## Quick start
 
-One iteration of the main loop:
+**Requirements:** Go ≥ 1.22, an OpenAPI 3.x spec file, a running REST API.
 
+```bash
+# Build
+git clone <repo> shelob-ng
+cd shelob-ng
+go build -o shelob-ng .
+
+# 1. Minimal — no auth, no CSP, pure random
+./shelob-ng -spec openapi.json -url http://localhost:3000
+
+# 2. With authentication (auto-detects login endpoint from spec)
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -user admin@example.com -password secret
+
+# 3. With security payload injection
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -user admin@example.com -password secret \
+    -payloads sqli=/tmp/sqli.txt,xss=/tmp/xss.txt \
+    -duration 1h -output ./results
+
+# 4. With BOLA detection (two users)
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -user user1@example.com -password pass1 \
+    -user2 user2@example.com -pass2 pass2
+
+# 5. Coverage-guided (requires CSP sidecar on the target)
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -csp-url http://localhost:8080 \
+    -corpus-dir ./corpus -duration 4h
+
+# 6. Full — everything enabled
+./shelob-ng -spec openapi.json -url http://localhost:3000 \
+    -user user1@example.com -password pass1 \
+    -user2 user2@example.com -pass2 pass2 \
+    -payloads sqli=/tmp/sqli.txt,xss=/tmp/xss.txt \
+    -csp-url http://localhost:8080 \
+    -corpus-dir ./corpus -duration 1h -output ./results
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  corpus.Select()           weighted random pick from corpus     │
-│        │                                                        │
-│        ▼                                                        │
-│  mutator.Mutate(entry)     clone + apply one strategy          │
-│        │                   structural / byte-level / security   │
-│        │                   fallback to original on all-skip     │
-│        ▼                                                        │
-│  csp.Reset()               zero coverage counters              │
-│        │                                                        │
-│        ▼                                                        │
-│  request.FromCorpusEntry() build *http.Request                 │
-│        │                                                        │
-│        ▼                                                        │
-│  http.Client.Do(req)       send to target                      │
-│        │                                                        │
-│        ▼                                                        │
-│  csp.Dump()                read new coverage lines             │
-│        │                                                        │
-│        ├─ delta > 0 ──▶  corpus.Add(entry)   save for future  │
-│        │                                                        │
-│        ▼                                                        │
-│  pool.Extract(body)        harvest IDs/tokens for path reuse   │
-│        │                                                        │
-│        ▼                                                        │
-│  checkers[0..N].Check()    run all enabled security checkers   │
-│        │                                                        │
-│        ├─ finding ──▶  logFinding()  write JSON to findings/   │
-│        │               display.Finding()                        │
-│        ▼                                                        │
-│  if tick % 20 == 0:        run one CRUD sequence (round-robin) │
-│    sequence.Runner.Run()                                        │
-│    sequence.SaveReplay()   persist replay if findings          │
-└─────────────────────────────────────────────────────────────────┘
+
+---
+
+## Usage scenarios
+
+### Scenario A — Smoke test (pure random, no auth)
+
+Use when you have a spec and a running target but no credentials. Finds
+schema violations, stack traces, and server crashes without authentication.
+
+```bash
+./shelob-ng -spec openapi.json -url http://target:8080 -duration 30m
 ```
 
-In pure-random mode (`-csp-disable`), the `csp.Reset()` / `csp.Dump()` calls
-are no-ops and `delta` is always 0 — the corpus still accumulates entries with
-`delta=1` from the initial seed.
+What to expect:
+- `SchemaViolation` findings for endpoints that return undeclared status codes
+- `BehavioralPatterns` findings when stack traces leak in 500 responses
+- `InvalidDynamicObject` findings when boundary path-param values crash the server
+
+---
+
+### Scenario B — Authenticated fuzzing
+
+Authenticates via `POST /login` (auto-detected from spec by path pattern or
+`operationId`). All subsequent requests carry the session cookie. Use this
+when the interesting endpoints require a logged-in user.
+
+```bash
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -user admin@corp.local -password 'P@ssw0rd!' \
+    -duration 1h -output ./results
+```
+
+How authentication works:
+1. `auth` package scans the spec for a `POST` operation matching `/login`,
+   `/users/login`, `operationId` containing `login` or `authenticate`, etc.
+2. Sends `POST` with `{"email": user, "password": password}` (or `username`/`user`)
+3. Extracts session cookies from `Set-Cookie` headers; if absent, reads the
+   response body for `token`, `access_token`, `authentication.token` fields
+4. Attaches cookies to every subsequent fuzzer request
+
+---
+
+### Scenario C — BOLA / IDOR detection
+
+Adds a second user (`-user2 / -pass2`). For every request that returns 2xx
+for user1, `NameSpaceRule` probes the same URL with user2's session. If user2
+also gets 2xx, the resource is accessible cross-account → **HIGH** finding.
+
+```bash
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -user owner@corp.local  -password 'Pass1!' \
+    -user2 other@corp.local -pass2  'Pass2!' \
+    -duration 2h -output ./results
+```
+
+Three-step probe sequence:
+1. User1 request → 2xx (resource exists and is owned)
+2. Anonymous probe (no cookies) → if 2xx, endpoint is public → skip
+3. User2 probe → if 2xx → **BOLA HIGH**
+
+---
+
+### Scenario D — Security payload injection
+
+Loads external wordlists and injects them into string fields. Combine with
+`BehavioralPatterns` to detect reflected injections.
+
+```bash
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -user admin@corp.local -password secret \
+    -payloads sqli=sqli.txt,xss=xss.txt,ssti=ssti.txt,lfi=lfi.txt \
+    -duration 2h -output ./results
+```
+
+Injection targets per request:
+- String-typed path parameters
+- All query, header, and cookie parameters
+- All string-valued leaf nodes in a JSON request body (dotted-path traversal)
+
+Recommended payload sources:
+```bash
+git clone https://github.com/swisskyrepo/PayloadsAllTheThings.git /tmp/patt
+cp "/tmp/patt/SQL Injection/Intruder/SQL_Bypass.txt"   sqli.txt
+cp "/tmp/patt/XSS Injection/Intruder/XSS Polyglots.txt" xss.txt
+```
+
+---
+
+### Scenario E — Coverage-guided mode
+
+Requires a CSP sidecar running alongside the target (see
+[Coverage Sidecar Protocol](#coverage-sidecar-protocol)). Each request's
+coverage delta determines whether the input enters the corpus.
+
+```bash
+# Start target with CSP sidecar, then:
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -csp-url http://localhost:8080 \
+    -corpus-dir ./corpus \
+    -duration 4h -output ./results
+```
+
+With coverage feedback, the `cov:` column in the display increments and
+`NEW` events show which new code paths were discovered. Without it, `cov:`
+stays at 0 and the corpus grows only from first-2xx-per-operation signals.
+
+---
+
+### Scenario F — Corpus persistence and resumption
+
+Save the corpus after a run, resume later from the same inputs:
+
+```bash
+# Run 1 — build corpus
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -corpus-dir ./corpus -duration 1h -output ./run1
+
+# Run 2 — load saved corpus, continue
+./shelob-ng -spec openapi.json -url http://target:8080 \
+    -corpus-dir ./corpus -duration 1h -output ./run2
+```
+
+Corpus on disk (`./corpus/`):
+```
+corpus/
+  index.json           {"version":1, "entry_count":243, ...}
+  entries/
+    3a7f2c8b....json   {"method":"POST","path_pattern":"/api/Users",...}
+    ...
+```
+
+---
+
+### Scenario G — Selective checkers
+
+Run a targeted subset of checkers to reduce noise or focus on a class of bugs:
+
+```bash
+# Schema-only: zero extra HTTP requests, fastest
+./shelob-ng -spec api.json -url http://target -checker SchemaViolation
+
+# Only behavioral patterns + payload injection
+./shelob-ng -spec api.json -url http://target \
+    -checker BehavioralPatterns \
+    -payloads sqli=sqli.txt,xss=xss.txt
+
+# Stateful resource management checks
+./shelob-ng -spec api.json -url http://target \
+    -checker UseAfterFree,InvalidDynamicObject
+
+# BOLA only
+./shelob-ng -spec api.json -url http://target \
+    -checker NameSpaceRule \
+    -user u1@x.com -password p1 \
+    -user2 u2@x.com -pass2 p2
+```
+
+---
+
+### Scenario H — Rate-limited target
+
+Use `-rps N` to cap throughput. The rate limiter applies to main-loop
+iterations; checker probes run concurrently and are not counted.
+
+```bash
+./shelob-ng -spec openapi.json -url https://staging.api.example.com \
+    -user admin@example.com -password secret \
+    -rps 10 -duration 4h -output ./results
+```
 
 ---
 
 ## Corpus and selection
 
-### CorpusEntry fields
+### CorpusEntry
+
+Each entry represents one reproducible HTTP request:
 
 ```
 Method        string            "GET", "POST", "DELETE", ...
-PathPattern   string            "/api/Users/{id}"
+PathPattern   string            "/api/Users/{id}"          ← OpenAPI template
 PathParams    map[string]any    {"id": int64(42)}
-QueryParams   map[string]string {"q": "test"}
+QueryParams   map[string]string {"q": "test", "page": "1"}
 HeaderParams  map[string]string
 CookieParams  map[string]string
-Body          []byte            raw JSON (or empty)
+Body          []byte            raw JSON / XML / binary
 ContentType   string            "application/json"
-CoverageDelta uint64            new lines covered when added
-Generation    uint32            0=seed, increments per mutation
+CoverageDelta uint64            new V8 blocks when this entry was added
+UseCount      uint64            times selected for mutation (cooling)
+Generation    uint32            0 = seed from spec; increments per mutation
 ```
 
-### Selection weight formula
+### Selection weight
 
 ```
 weight(entry) = log2(1 + delta) / log2(2 + useCount)
 ```
 
-- Higher `delta` → higher initial weight (coverage-interesting inputs stay in rotation)
-- Higher `useCount` → weight decays (cooling: every entry eventually gets a turn)
-- Minimum weight is never 0 (prevents starvation)
-- Seeds start with `delta=1`; real coverage feedback promotes them
+- Higher `CoverageDelta` → higher initial weight (coverage-rich inputs preferred)
+- Higher `UseCount` → weight decays (prevents starvation of any entry)
+- Seeds have `delta = 1`; real CSP feedback raises it proportionally
 
-### Corpus capacity
+Entries with `Generation > 0` (mutated) are always preferred over seeds.
+When no mutated entries exist, seeds are selected uniformly.
 
-Maximum 15,000 entries. When full, the weakest entry (lowest weight) is evicted.
+### Corpus admission
+
+An entry is added to the corpus when:
+1. **CSP delta > 0** — the request caused new V8 basic blocks to execute, OR
+2. **First 2xx for the operation** — API-level novelty even when CSP is disabled
+   (synthetic `delta = 1`, ensures all reachable endpoints enter the corpus)
+
+Maximum corpus size: 15,000 entries. On overflow, the entry with the lowest
+`Weight()` is evicted.
 
 ### DynamicValuePool
 
-After each request, JSON values are extracted from the response body and stored
-in a ring buffer (256 entries per field key). On the next mutation cycle,
-`GetValue(key)` returns a real server-side value (70% probability) or a randomly
-generated one (30%), giving path parameters like `/users/{id}` realistic values
-instead of spec-generated placeholders.
+After every request, `pool.Extract(body)` walks the JSON response and stores
+values in a ring buffer (256 per field key). When building the next request,
+`GetValue(key)` returns a server-assigned value with 70% probability (e.g., a
+real user ID) instead of a randomly generated one (30%). This gives path
+parameters like `/api/Users/{id}` realistic values that are more likely to
+address real resources.
 
 ---
 
 ## Mutation strategies
 
-Three strategies are combined with weighted random selection:
+Three strategies are composed with weighted random selection
+(structural : security : byte-level = 3 : 2 : 1 by default):
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│  structuralMutator    (default weight: 3)                    │
-│                                                              │
-│  Pick one field from: path params, query, headers,          │
-│  cookies, body  (body has 2× weight)                        │
-│                                                              │
-│  string  →  edge cases: "", " ", "null", "\x00", 256×"A"   │
-│             truncate to random prefix                        │
-│             duplicate: v+v                                   │
-│  int64   →  0, ±1, MaxInt64, MinInt64, 256, 65535, 65536    │
-│             nudge: v + {-1, 0, +1}                          │
-│  float64 →  0, ±1, MaxFloat32  /  nudge                     │
-│  bool    →  flip                                             │
-│  body    →  inject poison field  (proto pollution, NoSQL)    │
-│             remove random field                              │
-│             mutate leaf value                                │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  structuralMutator  (weight 3)                                   │
+│                                                                  │
+│  Pick one field:  path > query > header > cookie > body          │
+│                   (body has 2× selection weight)                 │
+│                                                                  │
+│  string  ─▶  edge cases: "", " ", "null", "\x00", 256×"A"       │
+│              truncate to random prefix                            │
+│              duplicate: v + v                                    │
+│  int64   ─▶  0, ±1, MaxInt64, MinInt64, 256, 65535, 65536       │
+│              nudge: v + {-1, 0, +1}                              │
+│  float64 ─▶  0.0, ±1.0, MaxFloat32, nudge                       │
+│  bool    ─▶  flip                                                │
+│  body    ─▶  inject poison field  (__proto__, $where, etc.)      │
+│              remove random leaf field                             │
+│              mutate random leaf value                             │
+└──────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────────┐
-│  byteLevelMutator     (default weight: 1)                    │
-│                                                              │
-│  Operates on raw Body bytes.                                 │
-│  6 operations chosen uniformly:                              │
-│    bitFlip      flip one random bit                          │
-│    byteFlip     flip one random byte                         │
-│    insertion    insert one random byte                       │
-│    deletion     delete one random byte                       │
-│    duplication  double the body (body + body)                │
-│    interesting  replace one byte with 0x00/0x01/0x7f/       │
-│                 0x80/0xfe/0xff                               │
-│  Skipped (StrategyNotApplicable) when Body is empty.         │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  securityMutator    (weight 2, requires -payloads)               │
+│                                                                  │
+│  Inject payload strings from external wordlist files into        │
+│  all string-typed fields (path, query, header, cookie, body).    │
+│                                                                  │
+│  Body injection uses dotted-path traversal to reach nested       │
+│  leaves, so {"user": {"name": "Alice"}} → injects into "name".  │
+│                                                                  │
+│  Returns StrategyNotApplicable when:                             │
+│    • no payload files loaded (-payloads not set)                 │
+│    • entry has no string-typed fields                            │
+└──────────────────────────────────────────────────────────────────┘
 
-┌──────────────────────────────────────────────────────────────┐
-│  securityMutator      (default weight: 2)                    │
-│                                                              │
-│  Injects payload strings from external wordlist files        │
-│  into string-valued fields.                                  │
-│                                                              │
-│  Targets:  path params (string type)                         │
-│            all query / header / cookie params                │
-│            string leaves in JSON body (dotted-path access)   │
-│                                                              │
-│  Enabled only when -payloads flag is set.                    │
-│  Skipped when no string targets exist.                       │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  byteLevelMutator   (weight 1)                                   │
+│                                                                  │
+│  Operates directly on raw Body bytes.                            │
+│  One of 6 operations chosen uniformly at random:                 │
+│                                                                  │
+│    bitFlip       flip one random bit in the body                 │
+│    byteFlip      XOR one random byte with 0xFF                   │
+│    insertion     insert one random byte at a random position     │
+│    deletion      remove one random byte                          │
+│    duplication   append the body to itself (body + body)         │
+│    interesting   replace one byte with a boundary value:         │
+│                  0x00 / 0x01 / 0x7F / 0x80 / 0xFE / 0xFF        │
+│                                                                  │
+│  Returns StrategyNotApplicable when Body is empty.               │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-When a strategy returns `StrategyNotApplicable`, the orchestrator falls back to
-the next strategy. If all strategies skip, the original (unmodified) entry is used.
+If all three strategies return `StrategyNotApplicable`, the entry is used
+as-is (clone of the selected corpus entry).
 
 ---
 
 ## Security checkers
 
-Six stateless checkers run on every request/response pair.
+Six stateless checkers run after every request/response pair. Checkers that
+issue additional HTTP probe requests do so concurrently (goroutine pool,
+semaphore 8) so they do not block the main fuzzing loop.
+
+Every finding is written exactly **once** per session (deduplicated by
+`checker + method + path_pattern`) and includes a **`curl` POC command**
+that reproduces the issue.
 
 ```
-┌────────────────────────────────────────────────────────────────┐
-│ Checker pipeline (each request)                                │
-│                                                                │
-│  request ──▶  BehavioralPatterns  scan body for SQL/XSS/trace │
-│           │                                                    │
-│           ├──▶  UseAfterFree      DELETE 2xx?                  │
-│           │       └── probe GET same URL                       │
-│           │           └── 2xx? → finding HIGH                  │
-│           │                                                    │
-│           ├──▶  InvalidDynamicObject  has path params?         │
-│           │       └── probe with -1, 0, 999999999, "null", ""  │
-│           │           └── 5xx? → finding MEDIUM                │
-│           │                                                    │
-│           ├──▶  LeakageRule       POST returned 4xx?           │
-│           │       └── probe GET same URL                       │
-│           │           └── 2xx? → finding MEDIUM                │
-│           │                                                    │
-│           ├──▶  NameSpaceRule     any 2xx? (needs -user2)      │
-│           │       └── replay with user2 cookies                │
-│           │           └── 2xx? → finding HIGH (BOLA/IDOR)      │
-│           │                                                    │
-│           └──▶  SchemaViolation   validate resp vs OAS schema  │
-│                   └── mismatch? → finding LOW                  │
-└────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│  For every completed request ──────────────────────────────────────▶│
+│                                                                     │
+│  BehavioralPatterns                                                 │
+│    Scans response body with 9 regexes (no extra HTTP requests)      │
+│    ─ SQL errors    ─ XSS artifacts    ─ Path traversal indicators   │
+│    ─ SSTI markers  ─ Go/Python/Java/Node.js stack traces            │
+│    Severity: HIGH for SQL/XSS/LFI/SSTI, MEDIUM for stack traces     │
+│                                                                     │
+│  UseAfterFree                                                       │
+│    Trigger: DELETE returned 2xx                                     │
+│    Probe:   GET same URL with auth cookies                          │
+│    Finding: GET also 2xx  →  HIGH ("resource accessible after DELETE")
+│                                                                     │
+│  InvalidDynamicObject                                               │
+│    Trigger: entry has any path parameters                           │
+│    Probes:  substitute each param with -1, 0, 999999999, "null", "" │
+│    Finding: probe returns 5xx  →  MEDIUM (no input validation)      │
+│                                                                     │
+│  LeakageRule                                                        │
+│    Trigger: POST returned 4xx (server rejected the request)         │
+│    Probe:   GET same URL with auth cookies                          │
+│    Finding: GET returns 2xx  →  MEDIUM (partial state committed)    │
+│                                                                     │
+│  NameSpaceRule  (requires -user2 / -pass2)                          │
+│    Trigger: any request returned 2xx for user1                      │
+│    Probe 1: anonymous probe (no cookies) — if 2xx, skip (public)    │
+│    Probe 2: replay with user2 cookies                               │
+│    Finding: user2 also 2xx  →  HIGH (BOLA / IDOR)                  │
+│                                                                     │
+│  SchemaViolation                                                    │
+│    Validates the actual response body against the OpenAPI schema    │
+│    (uses the real body, not an empty stub like the legacy code did) │
+│    Finding: schema mismatch  →  MEDIUM                             │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-| Checker | Extra requests | Severity |
-|---------|---------------|---------|
-| `BehavioralPatterns` | 0 | medium |
-| `UseAfterFree` | 1 (GET probe) | high |
-| `InvalidDynamicObject` | up to 5 (one per probe value) | medium |
-| `LeakageRule` | 1 (GET probe) | medium |
-| `NameSpaceRule` | 1 (replay with user2) | high |
-| `SchemaViolation` | 0 | low |
-
-`BehavioralPatterns` detects 8 patterns:
-- SQL error messages (`SQLITE_ERROR`, `ORA-`, `syntax error`, `Sequelize`)
-- XSS artifacts (`<script>` reflected in response)
-- Path traversal indicators (`../`, `etc/passwd`)
-- SSTI markers (`{{`, `}}` in rendered responses)
-- Go / Python / Java / Node.js stack traces
+| Checker | Extra HTTP requests | Severity |
+|---------|-------------------|---------|
+| `BehavioralPatterns` | 0 | high / medium |
+| `UseAfterFree` | 1 GET | high |
+| `InvalidDynamicObject` | up to 5 (one per sentinel value × param) | medium |
+| `LeakageRule` | 1 GET | medium |
+| `NameSpaceRule` | 1–2 (anon + user2 probe) | high |
+| `SchemaViolation` | 0 | medium |
 
 ---
 
 ## Stateful sequence testing
 
-Every 20 fuzzing iterations, shelob-ng runs one CRUD sequence.
+Every 20 fuzzing iterations shelob-ng runs one CRUD sequence (round-robin
+through all built sequences).
 
-### How sequences are built from the spec
-
-```
-For each POST /resource in spec:
-  Find matching child path /resource/{param}
-  Check POST response schema for id/uuid/key field
-  If found → build sequence:
-
-  Step 1  POST /resource           create resource, extract {id}
-            │
-            ▼  bind id → {param}
-  Step 2  GET  /resource/{id}      verify 2xx (resource exists)
-            │
-            ▼
-  Step 3  DELETE /resource/{id}    delete resource, expect 2xx
-            │
-            ▼
-  Step 4  GET  /resource/{id}      probe: MUST be 4xx
-                                   2xx here = UseAfterFree finding HIGH
-```
-
-### Sequence finding flow
+### How sequences are derived from the spec
 
 ```
-Runner.Run(seq)
-  bound = {}
+For each POST /resource in the spec:
+  Search for a child path /resource/{param}
+  Inspect the POST 2xx response schema for id/uuid/key/slug fields
+  If found → build a 4-step CRUD sequence:
 
-  for each step:
-    entry = step.Entry.Clone()
-    for param, val in bound:
-      entry.PathParams[param] = val    ← inject extracted IDs
+  Step 1  POST /resource           create → extract {id} from response
+          │
+          ▼  bind id → {param}
+  Step 2  GET  /resource/{id}      verify: expect 2xx (resource exists)
+          │
+          ▼
+  Step 3  DELETE /resource/{id}    delete: expect 2xx (server accepts)
+          │
+          ▼
+  Step 4  GET  /resource/{id}      probe:  MUST be 4xx (resource gone)
+                                   2xx here → UseAfterFree  HIGH
+```
 
-    resp, body = send(entry)
+### Replay persistence
 
-    if step.ExtractKey != "":
-      bound[step.BindParam] = extractJSONField(body, step.ExtractKey)
+When a sequence produces findings, a replay file is written to
+`<output>/replays/`. The replay records every step with URL, status code,
+and extracted values, enabling manual reproduction:
 
-    if resp.status/100 != step.WantStatus:
-      emit Finding{...}
-
-  SaveReplay(replay, outputDir)        ← only when findings present
+```json
+{
+  "sequence": "CRUD:/api/Users",
+  "executed_at": "2026-05-28T06:00:00Z",
+  "steps": [
+    {"method":"POST",   "url":"http://…/api/Users",   "status_code":201, "extracted":{"id":"7"}},
+    {"method":"GET",    "url":"http://…/api/Users/7",  "status_code":200},
+    {"method":"DELETE", "url":"http://…/api/Users/7",  "status_code":200},
+    {"method":"GET",    "url":"http://…/api/Users/7",  "status_code":200}
+  ],
+  "findings": [{"title":"Resource accessible after DELETE", ...}]
+}
 ```
 
 ---
@@ -535,145 +605,122 @@ Runner.Run(seq)
 shelob-ng prints libfuzzer-style event lines to stdout:
 
 ```
-INFO: spec: juice-shop.openapi.json
+INFO: spec: openapi.json
 INFO: target: http://localhost:3000
-INFO: coverage: disabled (pure-random mode)
-INFO: corpus: 143 seed entries
-INFO: checkers: BehavioralPatterns UseAfterFree InvalidDynamicObject LeakageRule SchemaViolation
+INFO: coverage: http://localhost:8080 (CSP)
+INFO: corpus: 171 seed entries
+INFO: checkers: BehavioralPatterns UseAfterFree InvalidDynamicObject LeakageRule NameSpaceRule SchemaViolation
 
-#0      INITED   cov:     0  corpus:   143  req/s:     0  2xx:     0  4xx:     0  5xx:     0
-#1      pulse    cov:     0  corpus:   143  req/s:     1  2xx:     0  4xx:     1  5xx:     0
-#4      pulse    cov:     0  corpus:   143  req/s:     4  2xx:     2  4xx:     2  5xx:     0
-#8      NEW      cov:    12  corpus:   144  req/s:     8  2xx:     5  4xx:     3  5xx:     0  [GET /api/Users/{id}  +12]
-#32     pulse    cov:    12  corpus:   144  req/s:    27  2xx:    18  4xx:    14  5xx:     0
-#64     FINDING  cov:    12  corpus:   144  req/s:    52  2xx:    33  4xx:    30  5xx:     1  [BehavioralPatterns/medium] Error message leaked  http://localhost:3000/api/Users/0
-#128    pulse    cov:    12  corpus:   144  req/s:    63  2xx:    65  4xx:    63  5xx:     0
-#256    NEW      cov:    18  corpus:   145  req/s:    71  2xx:   130  4xx:   126  5xx:     0  [POST /api/Users  +6]
-...
-DONE    #54000   cov:    18  corpus:   145  req/s:  14.9  findings:   3  elapsed: 1h0m2s
+#0       INITED   cov:     0  corpus:   171  ops:   0/95   req/s:     0  2xx:     0  4xx:     0  5xx:     0
+#2       NEW      cov:    14  corpus:   172  ops:   2/95   req/s:     0  2xx:     0  4xx:     2  5xx:     0  [POST /api/Cards  +14]
+#9       FINDING  cov:   110  corpus:   179  ops:   9/95   req/s:     0  2xx:     2  4xx:     6  5xx:     1  [BehavioralPatterns/medium] Node.js Stack Trace  http://…/api/Quantitys/
+#16      pulse    cov:   174  corpus:   183  ops:  14/95   req/s:     0  2xx:     5  4xx:     7  5xx:     4
+#512     NEW      cov:  6831  corpus:   721  ops:  87/95   req/s:    27  2xx:   121  4xx:   388  5xx:   203  [POST /api/SecurityAnswers  +29]
+
+DONE    #8423     cov: 51204  corpus:  1831  ops: 93/95 (97%)  req/s:  27.4  findings:  154  elapsed: 5m0s
+
+=== API spec coverage: 93/95 reached (97%), 26/95 succeeded (2xx) ===
 ```
 
 ### Column reference
 
 | Column | Meaning |
 |--------|---------|
-| `#N` | Total HTTP requests sent (including checker probes) |
-| `INITED/NEW/pulse/FINDING/DONE` | Event type |
-| `cov:` | Cumulative new coverage lines (sum of all CSP deltas) |
+| `#N` | Main-loop iteration count (checker probes not counted here) |
+| event | `INITED` / `NEW` / `pulse` / `FINDING` / `DONE` |
+| `cov:` | Cumulative new coverage blocks (sum of all CSP deltas; 0 in pure-random mode) |
 | `corpus:` | Current corpus size |
-| `req/s:` | Requests per second since start |
-| `2xx/4xx/5xx:` | Response status code buckets |
+| `ops: V/T` | API spec operations: V reached, T total |
+| `req/s:` | Average main-loop iterations per second since start |
+| `2xx/4xx/5xx:` | Response status code distribution |
 
 ### Event types
 
-| Event | Trigger | Extra info shown |
-|-------|---------|-----------------|
+| Event | When printed | Extra info |
+|-------|-------------|-----------|
 | `INITED` | Once at startup | — |
-| `pulse` | Every power-of-2 request count, or every 3 s | — |
-| `NEW` | Coverage increased (CSP delta > 0) | `[METHOD /path  +delta]` |
-| `FINDING` | Checker or sequence found an issue | `[checker/severity] title  url` |
-| `DONE` | Duration elapsed | `findings: N  elapsed: Xm Ys` |
+| `pulse` | Every power-of-2 iteration count, or every 3 s | — |
+| `NEW` | CSP delta > 0, or first 2xx for an operation | `[METHOD /path  +delta]` |
+| `FINDING` | New unique finding (after dedup) | `[checker/severity] title  url` |
+| `DONE` | Duration elapsed | `findings: N  elapsed: Xs` |
 
-### Color coding
-
-| Color | Event |
-|-------|-------|
-| Cyan | `INITED`, `DONE` |
-| Green | `NEW` |
-| Dim/faint | `pulse` |
-| Red | `FINDING` |
-| Yellow | `WARN:` |
-
-Disable with `-no-color` or set `NO_COLOR=1` / `TERM=dumb`.
+Disable colors: `-no-color` flag, `NO_COLOR=1` env var, or `TERM=dumb`.
 
 ---
 
 ## Output format
 
-### Finder output directory structure
+### Directory structure
 
 ```
 <output>/
   findings/
-    BehavioralPatterns_20260527_140001_000.json
-    UseAfterFree_20260527_140523_000.json
-    seq_CRUD__api_Users_20260527_141200_000.json
+    BehavioralPatterns_GET__rest_products_search.json
+    InvalidDynamicObject_DELETE__api_Addresss__id_.json
+    SchemaViolation_POST__api_SecurityAnswers.json
+    …                                                   ← one file per unique issue
   replays/
-    CRUD__api_Users_20260527_141200_000.json
+    CRUD__api_Users_20260528_060012.json                ← only when findings present
+  api-coverage.json                                     ← spec coverage report
 ```
 
-### Single-request finding (checker)
+Filenames are derived from the dedup key (`checker + method + path_pattern`)
+and are stable across runs — re-running the fuzzer overwrites existing files
+rather than accumulating duplicates.
+
+### Finding JSON
 
 ```json
 {
-  "checker": "UseAfterFree",
-  "severity": "high",
-  "title": "Resource accessible after DELETE",
-  "detail": "DELETE returned 204; subsequent GET returned 200 (expected 404)",
-  "method": "GET",
-  "url": "http://localhost:3000/api/Users/42",
-  "status_code": 200
+  "checker":      "BehavioralPatterns",
+  "severity":     "high",
+  "title":        "SQL Error Leakage",
+  "detail":       "pattern matched: SQLITE_ERROR",
+  "method":       "GET",
+  "url":          "http://localhost:3000/rest/products/search?q=%00",
+  "status_code":  500,
+  "path_pattern": "/rest/products/search",
+  "poc":          "curl -v -X GET 'http://localhost:3000/rest/products/search?q=%00'"
 }
 ```
 
-### Sequence finding
+| Field | Description |
+|-------|-------------|
+| `checker` | Name of the checker that produced this finding |
+| `severity` | `high` / `medium` / `low` |
+| `title` | Short description of the vulnerability class |
+| `detail` | Evidence: matched text, status codes observed, etc. |
+| `method` | HTTP method of the triggering or probe request |
+| `url` | Full URL of the triggering or probe request |
+| `status_code` | HTTP status code returned |
+| `path_pattern` | OpenAPI path template (used for deduplication) |
+| `poc` | `curl` command to reproduce the finding manually |
+
+### API coverage report (`api-coverage.json`)
 
 ```json
 {
-  "sequence": "CRUD:/api/Users",
-  "step_index": 3,
-  "severity": "high",
-  "title": "Resource accessible after DELETE",
-  "detail": "Resource accessible after DELETE expected 4xx, got 200",
-  "method": "GET",
-  "url": "http://localhost:3000/api/Users/7",
-  "status_code": 200
-}
-```
-
-### Sequence replay
-
-```json
-{
-  "sequence": "CRUD:/api/Users",
-  "executed_at": "2026-05-27T14:12:00.123Z",
-  "steps": [
-    {
-      "method": "POST",
-      "url": "http://localhost:3000/api/Users",
-      "status_code": 201,
-      "extracted": {"id": "7"}
-    },
+  "total":           95,
+  "visited_count":   93,
+  "succeeded_count": 26,
+  "unvisited_count":  2,
+  "visited": [
     {
       "method": "GET",
-      "url": "http://localhost:3000/api/Users/7",
-      "status_code": 200
-    },
-    {
-      "method": "DELETE",
-      "url": "http://localhost:3000/api/Users/7",
-      "status_code": 204
-    },
-    {
-      "method": "GET",
-      "url": "http://localhost:3000/api/Users/7",
-      "status_code": 200
+      "path": "/rest/products/search",
+      "operationId": "productsSearch",
+      "status_codes": {"200": 61, "500": 1}
     }
   ],
-  "findings": [
-    {
-      "sequence": "CRUD:/api/Users",
-      "step_index": 3,
-      "severity": "high",
-      "title": "Resource accessible after DELETE",
-      "detail": "Resource accessible after DELETE expected 4xx, got 200",
-      "method": "GET",
-      "url": "http://localhost:3000/api/Users/7",
-      "status_code": 200
-    }
+  "unvisited": [
+    {"method": "GET", "path": "/api/BasketItems"}
   ]
 }
 ```
+
+`visited_count` = operations that received at least one HTTP response.
+`succeeded_count` = operations that received at least one **2xx** response.
+The difference reveals endpoints that are unreachable or crash on every input.
 
 ---
 
@@ -682,85 +729,291 @@ Disable with `-no-color` or set `NO_COLOR=1` / `TERM=dumb`.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-spec` | **required** | OpenAPI spec file (JSON or YAML) |
-| `-url` | from spec | Target base URL, overrides `servers[]` in spec |
-| `-user` | | Username for cookie-based login / Basic auth |
-| `-password` | | Password |
+| `-url` | from spec `servers[]` | Target base URL |
+| `-user` | | Username for cookie-based login |
+| `-password` | | Password for primary user |
+| `-user2` | | Second user for `NameSpaceRule` (BOLA) |
+| `-pass2` | | Password for second user |
 | `-apikey` | | API key header value |
 | `-token` | | Bearer token |
 | `-output` | `fuzzer_output` | Output directory for findings and replays |
-| `-detailed` | false | Log successful requests in addition to findings |
-| `-duration` | `1h` | Fuzzing duration (`30m`, `2h`, `24h`, ...) |
+| `-duration` | `1h` | Fuzzing duration (`30m`, `2h`, `24h`, …) |
+| `-rps` | `0` | Requests per second cap (0 = unlimited) |
+| `-no-color` | false | Disable ANSI colors in terminal output |
 | `-debug` | false | Enable debug-level logging (very verbose) |
-| `-rps` | 0 | Requests per second cap (0 = unlimited) |
-| `-no-color` | false | Disable ANSI colors (auto-set when `NO_COLOR` env is present or `TERM=dumb`) |
-| `-csp-url` | | Coverage Sidecar Protocol base URL (`http://host:port`) |
-| `-csp-disable` | false | Explicitly disable coverage feedback; run in pure-random mode |
-| `-corpus-dir` | | Persist corpus to this directory; load on start if present |
-| `-payloads` | | Security payload files: `key=/path.txt,key2=/path2.txt` |
-| `-checker` | all | Comma-separated list of checkers to enable; empty = all |
-| `-user2` | | Second user for BOLA/`NameSpaceRule` checker |
-| `-pass2` | | Password for second user |
+| `-csp-url` | | CSP sidecar base URL (`http://host:port`) |
+| `-csp-disable` | false | Force pure-random mode even if `-csp-url` is set |
+| `-corpus-dir` | | Persist/load corpus to/from this directory |
+| `-payloads` | | Payload wordlists: `key=path,key2=path2` |
+| `-checker` | all | Comma-separated checker names to enable; empty = all |
 
 ---
 
 ## Coverage Sidecar Protocol
 
-CSP is a minimal HTTP protocol that any application can implement to export
-coverage data to shelob-ng.
+CSP is a minimal HTTP protocol that exposes per-request code coverage from
+any application to shelob-ng. It requires no changes to the application's
+source code — only a thin sidecar process.
 
-### Endpoints
+### Protocol endpoints
 
 ```
 POST /csp/reset
   Called before each fuzzing request.
-  Zeros coverage counters so the next /csp/dump shows only what the
-  current request exercised.
+  Snapshots current coverage as a baseline.
   Response: 200 OK (body ignored)
 
 GET /csp/dump
   Called after each fuzzing request.
-  Returns coverage data as JSON.
-  Response: 200 OK + JSON body
+  Returns lines covered since the last reset.
+  Response: 200 OK + JSON
 ```
 
 ### /csp/dump response schema
 
 ```json
 {
-  "total_lines":    1200,
-  "covered_lines":  347,
-  "bitmap":         "<base64-encoded coverage bitmap>",
-  "new_since_reset": ["handler.go:42", "db.go:118"]
+  "total_lines":     12400,
+  "covered_lines":   3847,
+  "new_since_reset": ["routes/users.js:142", "db/query.js:87", "…"],
+  "bitmap":          "<base64 optional>"
 }
 ```
 
-| Field | Type | Meaning |
-|-------|------|---------|
-| `total_lines` | int | Total instrumented lines |
-| `covered_lines` | int | Lines covered since process start |
-| `bitmap` | string | Base64 coverage bitmap (optional) |
-| `new_since_reset` | []string | Lines newly covered since last `/csp/reset` |
-
-When `len(new_since_reset) > 0`, `delta = len(new_since_reset)` and the
-triggering entry is added to the corpus with that delta as its weight.
-
-### Adapter examples
-
-Ready-made CSP adapters are in `adapters/`:
-
-```
-adapters/
-  go/       net/http handler, uses runtime/coverage (Go 1.20+)
-  c/        gcov + libmicrohttpd
-  nodejs/   express middleware + V8 coverage
-  python/   Flask + coverage.py
-```
+`delta = len(new_since_reset)`.
+When `delta > 0`, the triggering entry enters the corpus with that delta as
+its coverage weight. The `bitmap` field is optional and currently unused.
 
 ### When to use coverage mode
 
-| Scenario | Recommendation |
-|----------|---------------|
+| Situation | Recommendation |
+|-----------|---------------|
 | Black-box target, no source access | `-csp-disable` (pure random) |
-| Target you control (Go/Node/Python) | Add CSP adapter, use `-csp-url` |
-| Maximum finding rate on known app | Pure random + payload wordlists |
-| Finding deep logic bugs | Coverage-guided mode |
+| Node.js / Express target | Use `adapters/nodejs/adapter.js` |
+| Go target | Use `adapters/go/adapter.go` (runtime/coverage, Go 1.20+) |
+| Python / Flask target | Use `adapters/python/adapter.py` (coverage.py) |
+| C / C++ target | Use `adapters/c/adapter.c` (gcov + libmicrohttpd) |
+| Maximum speed, known wordlists | Pure random + `-payloads` |
+| Deep logic bugs, long-running audit | Coverage-guided mode |
+
+### Implementing your own adapter
+
+Any HTTP server that implements the two endpoints above is a valid CSP adapter.
+The simplest possible adapter in pseudo-code:
+
+```
+baseline = {}
+
+POST /csp/reset:
+  baseline = get_current_coverage()
+  return 200
+
+GET /csp/dump:
+  current  = get_current_coverage()
+  new_lines = current - baseline
+  return {"new_since_reset": new_lines, "covered_lines": len(current)}
+```
+
+---
+
+## Example: OWASP Juice Shop
+
+The `example/` directory contains a complete, ready-to-run walkthrough against
+[OWASP Juice Shop](https://github.com/juice-shop/juice-shop) — an intentionally
+vulnerable Node.js e-commerce application.
+
+### Prerequisites
+
+| Tool | Version | Purpose |
+|------|---------|---------|
+| Go | ≥ 1.22 | Build shelob-ng |
+| Docker | ≥ 20.x | Run Juice Shop |
+| Docker Compose v2 | | Orchestrate containers |
+| `curl` | any | Account creation, health checks |
+| `jq` | any | Pretty-print findings (optional) |
+
+### Setup (one time)
+
+```bash
+cd example/
+
+# Check prerequisites
+make check
+
+# Build fuzzer, start Juice Shop on :3000, create two accounts, fetch spec
+make setup
+```
+
+`make setup` runs in order:
+1. `go build` the fuzzer binary
+2. `docker compose up -d` (standard Juice Shop on port 3000)
+3. Creates `fuzzer@shelob.local` and `victim@shelob.local` via the registration API
+4. Fetches the OpenAPI spec from the running container
+
+### Running scenarios
+
+```bash
+make run-1    # pure random (5 min)
+make run-2    # authenticated (5 min)
+make run-3    # BOLA / NameSpaceRule (5 min, two users)
+make run-4    # payload injection: SQLi, XSS, SSTI, LFI (15 min)
+make run-5    # coverage-guided — needs: make start-csp first (15 min)
+make run-6    # corpus persistence: two successive runs (5+5 min)
+make run-7    # selective checkers (three sub-scenarios)
+make run-8    # full: everything enabled (1 h; DURATION_FULL=5m for quick check)
+
+make run-quick    # scenarios 1–4 back-to-back
+make run-all      # all 8 scenarios (run-5 needs CSP image)
+make report       # aggregate findings from all results/
+```
+
+### Coverage-guided setup (scenario 5)
+
+```bash
+# Build the CSP-instrumented image (one time)
+docker compose -f docker-compose.yml -f docker-compose.csp.yml build
+
+# Start: Juice Shop on :3000 + CSP sidecar on :8080
+make start-csp
+
+# Run coverage-guided scenario
+make run-5
+```
+
+The CSP adapter (`csp/adapter.js`) uses the V8 Inspector
+`Profiler.startPreciseCoverage` API. It starts a second HTTP server on port
+8080 that responds to `POST /csp/reset` and `GET /csp/dump`.
+
+### Expected findings (run-8, 5 min, all features)
+
+Results from a representative 5-minute full run on a default Juice Shop install:
+
+```
+DONE  #8423  cov: 51204  corpus: 1831  ops: 93/95 (97%)  req/s: 27.4  findings: 154  elapsed: 5m0s
+
+=== API spec coverage: 93/95 reached (97%), 26/95 succeeded (2xx) ===
+```
+
+| Checker | Count | Example |
+|---------|-------|---------|
+| `SchemaViolation` | 74 | Response body missing declared fields |
+| `BehavioralPatterns` | 55 | Node.js stack traces in 500 responses |
+| `InvalidDynamicObject` | 20 | Server crash on `DELETE /api/Addresss/` |
+| `LeakageRule` | 5 | Public collection accessible after auth-required POST |
+
+**High-severity finding:**
+
+```
+[BehavioralPatterns] SQL Error Leakage — HIGH
+Operation: GET /rest/products/search
+Detail:    pattern matched: SQLITE_ERROR
+
+POC:
+curl -v -X GET 'http://localhost:3000/rest/products/search?q=%00'
+```
+
+Sending a null byte as the search parameter causes Juice Shop to return an
+`SQLITE_ERROR` string in the response body, leaking database engine information.
+
+### Reading findings
+
+```bash
+# List all unique findings
+ls results/08_full/findings/
+
+# Pretty-print one finding (includes POC)
+jq . results/08_full/findings/BehavioralPatterns_GET__rest_products_search.json
+
+# Count by checker
+jq -r '.checker' results/08_full/findings/*.json | sort | uniq -c | sort -rn
+
+# Extract all POC commands
+jq -r 'select(.poc) | "# \(.title)\n" + .poc + "\n"' \
+   results/08_full/findings/*.json
+
+# Show API coverage summary
+jq '{reached: .visited_count, succeeded: .succeeded_count, total: .total}' \
+   results/08_full/api-coverage.json
+```
+
+### Aggregate report
+
+```bash
+make report
+```
+
+Prints per-scenario tables, checker breakdown, and for each finding: the
+operation, detail, and full `curl` reproduction command.
+
+---
+
+## Development
+
+### Building and testing
+
+```bash
+go build ./...
+go test ./...
+
+# With race detector
+go test -race ./...
+
+# Coverage report
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+```
+
+### Adding a checker
+
+1. Create `checkers/mychecker.go` implementing the `Checker` interface:
+
+```go
+type MyChecker struct{}
+
+func (MyChecker) Name() string { return "MyChecker" }
+
+func (MyChecker) Check(ctx context.Context, cctx CheckContext,
+    entry *corpus.CorpusEntry, req *http.Request,
+    resp *http.Response, body []byte) []Finding {
+
+    // … detection logic …
+
+    return []Finding{{
+        Checker:     "MyChecker",
+        Severity:    SeverityHigh,
+        Title:       "Short description",
+        Detail:      "Evidence: " + evidence,
+        Method:      req.Method,
+        URL:         req.URL.String(),
+        StatusCode:  resp.StatusCode,
+        PathPattern: entry.PathPattern,
+        POC:         BuildCurlPOC(req, entry.Body),
+    }}
+}
+```
+
+2. Register it in `checkers/checker.go`:
+
+```go
+func All() []Checker {
+    return []Checker{
+        BehavioralPatterns{},
+        // …
+        MyChecker{},  // add here
+    }
+}
+```
+
+### Adding a CSP adapter
+
+See `adapters/` for reference implementations. An adapter needs to:
+- Start a secondary HTTP server (default port 8080)
+- Keep a `baseline` set of covered code locations
+- `POST /csp/reset` → snapshot baseline
+- `GET /csp/dump` → return `new_since_reset` = current − baseline
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
