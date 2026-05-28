@@ -79,7 +79,7 @@ func findChildPath(parent string, paths map[string]*openapi3.PathItem) (paramNam
 			continue
 		}
 		pName := rest[1 : len(rest)-1]
-		if pi.Get == nil && pi.Delete == nil {
+		if pi.Get == nil && pi.Delete == nil && pi.Put == nil && pi.Patch == nil {
 			continue
 		}
 		return pName, p, pi, true
@@ -195,6 +195,58 @@ func buildCRUDSequence(
 
 	name := "CRUD:" + postPath
 	return &Sequence{Name: name, Steps: steps}
+}
+
+// BuildDependencyGraph constructs a corpus.DependencyGraph from the OpenAPI spec,
+// linking each consumer operation (GET/PUT/PATCH/DELETE /X/{param}) to the producer
+// (POST /X) that creates the resource and returns its ID.
+//
+// The resulting graph is used by the main fuzz loop: before sending a consumer
+// request the runner first executes the producer, extracts the created ID, and
+// injects it into the consumer's path parameters — ensuring the request targets
+// a real, existing resource instead of a random (likely non-existent) ID.
+func BuildDependencyGraph(spec *openapi3.T) *corpus.DependencyGraph {
+	graph := corpus.NewDependencyGraph()
+	if spec == nil || spec.Paths == nil {
+		return graph
+	}
+
+	paths := spec.Paths.Map()
+	for parentPath, parentItem := range paths {
+		if parentItem == nil || parentItem.Post == nil {
+			continue
+		}
+		paramName, childPath, childItem, ok := findChildPath(parentPath, paths)
+		if !ok {
+			continue
+		}
+		idField := responseIDField(parentItem.Post, paramName)
+		if idField == "" {
+			continue
+		}
+		postEntry, err := corpus.SeedEntry("POST", parentPath, parentItem.Post)
+		if err != nil {
+			log.Debugf("dependency: seed POST %s: %v", parentPath, err)
+			continue
+		}
+		binding := &corpus.ProducerBinding{
+			ProducerMethod:      "POST",
+			ProducerPathPattern: parentPath,
+			ProducerEntry:       postEntry,
+			IDField:             idField,
+			ParamName:           paramName,
+		}
+		for method, op := range childItem.Operations() {
+			if op == nil {
+				continue
+			}
+			graph.Register(method, childPath, binding)
+			log.Debugf("dependency: %s %s → POST %s (field: %q)", method, childPath, parentPath, idField)
+		}
+	}
+
+	log.Infof("dependency: %d consumer binding(s) registered", graph.Size())
+	return graph
 }
 
 // is2xx returns true when the OpenAPI response status code string represents

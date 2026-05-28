@@ -130,6 +130,10 @@ func Run() {
 	}
 	activeCheckers := selectCheckers(cfg.Checker, checkCtx)
 
+	// Dependency graph: maps consumer operations to their producers.
+	// Used to pre-execute producers before consumers so path params carry real IDs.
+	depGraph := sequence.BuildDependencyGraph(spec)
+
 	// Sequence runner: stateful CRUD sequences derived from the OpenAPI spec.
 	seqs := sequence.BuildSequences(spec)
 	seqRunner := &sequence.Runner{
@@ -200,6 +204,20 @@ func Run() {
 		if err != nil {
 			log.Debugf("run: mutate %s %s: %v; using entry as-is", entry.Method, entry.PathPattern, err)
 			mutated = entry.Clone()
+		}
+
+		// Producer-consumer: if this entry is a known consumer, pre-execute its
+		// producer to obtain a real resource ID and inject it into the path params.
+		// This replaces the random/pooled ID with one that actually exists on the
+		// server, raising the 2xx rate for CRUD endpoints dramatically.
+		if prod, ok := depGraph.ProducerFor(mutated.Method, mutated.PathPattern); ok {
+			if id, prodBody, err := executeProducer(httpClient, prod, targetURL, authCookies, cfg.ApiKey, cfg.Token); err == nil {
+				mutated.PathParams[prod.ParamName] = id
+				pool.Extract(prodBody) // also feed the pool for other consumers
+				log.Debugf("run: producer-consumer: bound %s=%v for %s %s", prod.ParamName, id, mutated.Method, mutated.PathPattern)
+			} else {
+				log.Debugf("run: producer-consumer: %s %s: %v", mutated.Method, mutated.PathPattern, err)
+			}
 		}
 
 		// Reset coverage counters before the request.
@@ -345,6 +363,38 @@ func doRequest(client *http.Client, req *http.Request) (*http.Response, []byte, 
 		return resp, body, fmt.Errorf("read body: %w", err)
 	}
 	return resp, body, nil
+}
+
+// executeProducer sends the producer request from binding and returns the extracted
+// resource ID and raw response body. The ID is typed (int64 or string) so it can
+// be assigned directly to corpus.PathParams.
+//
+// Returns a non-nil error when the producer request fails at the network level,
+// returns a non-2xx status, or the IDField is absent from the response JSON.
+// On error the caller proceeds with whatever path param was already in the entry.
+func executeProducer(
+	client *http.Client,
+	binding *corpus.ProducerBinding,
+	targetURL string,
+	authCookies []*http.Cookie,
+	apiKey, token string,
+) (id interface{}, body []byte, err error) {
+	req, err := request.FromCorpusEntry(binding.ProducerEntry.Clone(), targetURL, authCookies, apiKey, token)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build producer request: %w", err)
+	}
+	resp, body, err := doRequest(client, req)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, body, fmt.Errorf("producer %s %s: status %d", binding.ProducerMethod, binding.ProducerPathPattern, resp.StatusCode)
+	}
+	id = sequence.ExtractJSONField(body, binding.IDField)
+	if id == nil {
+		return nil, body, fmt.Errorf("field %q not found in producer response", binding.IDField)
+	}
+	return id, body, nil
 }
 
 // safeFileName converts an arbitrary string into a filesystem-safe name.

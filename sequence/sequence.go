@@ -135,7 +135,7 @@ func (r *Runner) Run(ctx context.Context, seq Sequence) ([]Finding, Replay) {
 
 		// Extract a value from the response body for downstream steps.
 		if step.ExtractKey != "" {
-			val := extractJSONField(body, step.ExtractKey)
+			val := ExtractJSONField(body, step.ExtractKey)
 			if val != nil {
 				bound[step.BindParam] = val
 				rs.Extracted = map[string]string{step.BindParam: fmt.Sprintf("%v", val)}
@@ -195,11 +195,11 @@ func (r *Runner) sendStep(ctx context.Context, entry *corpus.CorpusEntry) (*http
 	return resp, body, url, nil
 }
 
-// extractJSONField returns the top-level value for key from a JSON object body.
+// ExtractJSONField returns the top-level value for key from a JSON object body.
 // Returns nil when the body is not a JSON object or the key is absent.
 // Numbers are returned as int64 when possible, then float64, preserving
 // precision needed for path parameters.
-func extractJSONField(body []byte, key string) interface{} {
+func ExtractJSONField(body []byte, key string) interface{} {
 	body = bytes.TrimSpace(body)
 	if len(body) == 0 || body[0] != '{' {
 		return nil
