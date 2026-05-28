@@ -4,7 +4,8 @@ A complete, ready-to-run walkthrough of shelob-ng against
 [OWASP Juice Shop](https://github.com/juice-shop/juice-shop) — an intentionally
 vulnerable Node.js e-commerce application used for security training.
 
-Covers **all 8 usage scenarios** from a quick smoke test to a full 1-hour audit.
+Covers **10 usage scenarios** from a quick smoke test to a full 1-hour audit,
+including verification of new features: Bearer token auth and LeakageRule false-positive fix.
 
 ---
 
@@ -38,6 +39,8 @@ example/
     07_scenario_corpus.sh
     08_scenario_checkers.sh
     09_scenario_full.sh
+    10_scenario_bearer_token.sh   Bearer token auth via -token flag (new)
+    11_scenario_leakage_verify.sh LeakageRule false-positive verification (new)
     10_report.sh              aggregate findings report
     11_coverage_report.sh     HTML code-coverage report via c8
   results/                    created at runtime (in .gitignore)
@@ -87,6 +90,8 @@ make check    # verifies all of the above
 | 6 | Corpus persistence | save → resume across two runs | 5+5 m |
 | 7 | Selective checkers | three sub-scenarios | 5 m × 3 |
 | 8 | Full | everything simultaneously | 1 h |
+| **9** | **Bearer token auth** | **`-token` flag (JWT, no cookie login)** | **5 m** |
+| **10** | **LeakageRule verify** | **validates 401/403 false-positive fix** | **5 m** |
 
 Override the duration at any time:
 
@@ -322,6 +327,85 @@ DONE    #8423    cov: 51204  corpus:  1831  ops: 93/95 (97%)  req/s:  27.4  find
 
 ---
 
+## Scenario 9 — Bearer token authentication
+
+Demonstrates the `-token` flag: a JWT is obtained directly from Juice Shop's
+login endpoint and passed to shelob-ng instead of using `-user`/`-password`
+cookie login. Every request — including all checker probe requests — carries
+`Authorization: Bearer <token>`.
+
+```bash
+make run-9
+```
+
+What the script does:
+1. Calls `POST /rest/user/login` with `curl` to obtain a JWT
+2. Verifies the token on `GET /rest/user/whoami` (expects 200)
+3. Runs the fuzzer with `-token <jwt>` — no `-user` / `-password` at all
+
+**Use this mode when:**
+- The target uses stateless JWT-only auth (no `Set-Cookie` header)
+- You have a pre-obtained service token (CI environment, admin token)
+- You want to fuzz with a long-lived token without triggering the login endpoint
+
+**Expected output — comparison with scenario 2:**
+```
+# Scenario 2 (cookie):   succeeded: 26/95
+# Scenario 9 (token):    succeeded: ~24-26/95 (same auth scope, slightly
+#                         different since no synthetic cookie is created)
+```
+
+The `succeeded` count (2xx responses) should be similar between scenarios 2
+and 9, confirming the token provides equivalent authentication scope.
+
+---
+
+## Scenario 10 — LeakageRule false-positive verification
+
+Verifies that the 401/403 fix in `LeakageRule` is working correctly.
+Runs in two parts: fuzzing + automated analysis of findings.
+
+```bash
+make run-10
+```
+
+**Background — what was fixed:**
+
+Old behaviour (bug):
+```
+POST /api/Feedbacks → 401 Unauthorized   ← auth layer rejected it
+GET  /api/Feedbacks → 200 OK             ← collection is public
+→ LeakageRule: FINDING (FALSE POSITIVE)  ← wrong! no state was committed
+```
+
+Fixed behaviour:
+```
+POST /api/Feedbacks → 401 Unauthorized   ← 401/403 = skip (new)
+→ LeakageRule: silent                    ← correct
+```
+
+Only genuine validation failures now trigger LeakageRule:
+```
+POST /api/Something → 400 Bad Request    ← reached app logic, rejected
+GET  /api/Something → 200 OK             ← state committed despite rejection
+→ LeakageRule: FINDING (TRUE POSITIVE)   ← real bug: missing rollback
+```
+
+**Script output:**
+```
+=== Analysis ===
+  Total unique findings: 0
+  PASS: zero findings triggered by 401/403 responses.
+        Auth rejections correctly excluded from LeakageRule.
+  No genuine LeakageRule findings (POST 400/422 → GET 200).
+  Juice Shop correctly rolls back failed transactions.
+```
+
+If the fix is not applied, the analysis will print `FAIL` and list all
+false positives — useful as a regression test.
+
+---
+
 ## Expected findings (5-minute run, run-8)
 
 | Checker | Count | Representative example |
@@ -329,7 +413,10 @@ DONE    #8423    cov: 51204  corpus:  1831  ops: 93/95 (97%)  req/s:  27.4  find
 | `SchemaViolation` | 74 | Response body contains undeclared fields |
 | `BehavioralPatterns` | 55 | Node.js stack trace in 500 response body |
 | `InvalidDynamicObject` | 20 | `DELETE /api/Addresss/` → 500 (empty path param) |
-| `LeakageRule` | 5 | Public collection accessible after auth-required POST |
+| `LeakageRule` | 0–2 | POST 400/422 validation failure with committed state |
+
+`LeakageRule` no longer fires on 401/403 responses (auth rejections cannot
+commit partial state). Any remaining findings indicate real rollback bugs.
 
 **High-severity finding — SQL error leakage:**
 ```
