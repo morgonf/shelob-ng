@@ -25,17 +25,22 @@ func CreateUser(username, password, url string) []*http.Cookie {
 }
 
 func CreateUserWithLoginEndpoint(username, password, url, loginEndpoint string) []*http.Cookie {
-	// Heuristic: if the login endpoint looks like a juice-shop style path,
-	// use "email" field. Otherwise fall back to "username".
-	if strings.Contains(loginEndpoint, "/rest/") || strings.Contains(loginEndpoint, "/login") {
-		testUser := UserItem{Email: username, Password: password}
-		return testUser.getCookies(url, loginEndpoint)
-	}
-	testUser := UserItem{Username: username, Password: password}
-	return testUser.getCookies(url, loginEndpoint)
+	cookies, _ := Login(username, password, url, loginEndpoint)
+	return cookies
 }
 
-func (testUser *UserItem) getCookies(url, loginEndpoint string) []*http.Cookie {
+// Login authenticates and returns both the session cookies and the raw JWT
+// token string. The token is useful for targets whose endpoints require
+// Authorization: Bearer rather than (or in addition to) cookie-based auth.
+// token is empty when no JWT was found.
+func Login(username, password, url, loginEndpoint string) (cookies []*http.Cookie, token string) {
+	if strings.Contains(loginEndpoint, "/rest/") || strings.Contains(loginEndpoint, "/login") {
+		return UserItem{Email: username, Password: password}.login(url, loginEndpoint)
+	}
+	return UserItem{Username: username, Password: password}.login(url, loginEndpoint)
+}
+
+func (testUser UserItem) login(url, loginEndpoint string) (cookies []*http.Cookie, token string) {
 	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
 		url = "http://" + url
 	}
@@ -43,14 +48,14 @@ func (testUser *UserItem) getCookies(url, loginEndpoint string) []*http.Cookie {
 	payload, err := json.Marshal(testUser)
 	if err != nil {
 		log.Error("auth.go\tFailed to create json: ", err)
-		return nil
+		return nil, ""
 	}
 
 	loginURL := url + loginEndpoint
 	httpRequest, err := http.NewRequest("POST", loginURL, bytes.NewReader(payload))
 	if err != nil {
 		log.Error("auth.go\tFailed to create http request: ", err)
-		return nil
+		return nil, ""
 	}
 	httpRequest.Header.Set("Accept", "application/json")
 	httpRequest.Header.Set("Content-Type", "application/json")
@@ -58,48 +63,44 @@ func (testUser *UserItem) getCookies(url, loginEndpoint string) []*http.Cookie {
 	response, err := http.DefaultClient.Do(httpRequest)
 	if err != nil {
 		log.Warn("auth.go\tFailed to make http request for authentication: ", err)
-		return []*http.Cookie{}
+		return []*http.Cookie{}, ""
 	}
 	defer response.Body.Close()
 
 	if response.StatusCode != 200 {
 		log.Warn("[---] No cookies ;(\t", response.Status)
-		return []*http.Cookie{}
+		return []*http.Cookie{}, ""
 	}
 
-	// First try standard Set-Cookie headers (most APIs).
-	cookies := response.Cookies()
-	if len(cookies) > 0 {
-		log.Info("[+++] Cookies are stored")
-		return cookies
-	}
-
-	// Fallback: extract JWT from JSON body and return it as a synthetic cookie.
-	// Handles APIs like OWASP Juice Shop that return {"authentication":{"token":"<jwt>"}}.
+	// Read the full body once — needed both for cookie fallback and token extraction.
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		log.Warn("[---] Could not read login response body")
-		return []*http.Cookie{}
+		return []*http.Cookie{}, ""
 	}
 
+	// Try to extract a JWT from the JSON body for targets that return it there.
 	var parsed map[string]interface{}
-	if err := json.Unmarshal(body, &parsed); err != nil {
-		log.Warn("[---] Login response is not JSON")
-		return []*http.Cookie{}
+	var rawToken string
+	if json.Unmarshal(body, &parsed) == nil {
+		rawToken = extractToken(parsed)
 	}
 
-	// Walk common JWT locations: top-level "token", "access_token",
-	// or nested under "authentication" or "data".
-	token := extractToken(parsed)
-	if token == "" {
+	// Prefer standard Set-Cookie headers (most APIs).
+	setCookies := response.Cookies()
+	if len(setCookies) > 0 {
+		log.Info("[+++] Cookies are stored")
+		return setCookies, rawToken
+	}
+
+	// Fallback: synthesise a cookie from the body token so cookie-based endpoints work.
+	if rawToken == "" {
 		log.Warn("[---] No token found in login response")
-		return []*http.Cookie{}
+		return []*http.Cookie{}, ""
 	}
 
 	log.Info("[+++] JWT extracted from response body, using as session cookie")
-	return []*http.Cookie{
-		{Name: "token", Value: token},
-	}
+	return []*http.Cookie{{Name: "token", Value: rawToken}}, rawToken
 }
 
 // extractToken walks common JSON shapes to find a JWT string.

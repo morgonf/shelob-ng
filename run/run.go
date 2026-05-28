@@ -73,8 +73,18 @@ func Run() {
 
 	// Auth: primary user login.
 	loginEndpoint := getLoginEndpoint(spec)
-	authCookies := auth.CreateUserWithLoginEndpoint(cfg.Username, cfg.Password, targetURL, loginEndpoint)
+	authCookies, loginToken := auth.Login(cfg.Username, cfg.Password, targetURL, loginEndpoint)
 	log.Infof("auth: %d session cookie(s) obtained", len(authCookies))
+
+	// If no explicit -token flag was given, use the JWT returned by the login
+	// endpoint as the Bearer token. This lets the fuzzer reach endpoints that
+	// accept only Authorization: Bearer (e.g. Juice Shop Sequelize CRUD routes)
+	// in addition to cookie-based endpoints, without requiring the user to pass
+	// the token manually.
+	if cfg.Token == "" && loginToken != "" {
+		cfg.Token = loginToken
+		log.Infof("auth: JWT from login used as Bearer token")
+	}
 
 	// Auth: optional second user for BOLA/NameSpaceRule checker.
 	var user2Cookies []*http.Cookie

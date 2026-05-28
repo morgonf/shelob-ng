@@ -82,25 +82,45 @@ func (c *weightedCorpus) Add(entry *CorpusEntry, delta uint64) bool {
 }
 
 // evictWeakest removes the entry with the lowest weight. Called under write lock.
+// Seed entries (Generation == 0) are never evicted: they are the only guarantee
+// that every seeded API operation remains reachable throughout a long run. Without
+// this protection, low-delta seeds for rarely-visited endpoints get displaced by
+// high-delta mutated entries after the corpus hits capacity, making those
+// endpoints permanently unreachable.
 func (c *weightedCorpus) evictWeakest() {
 	if len(c.entries) == 0 {
 		return
 	}
 
-	weakestIdx := 0
-	weakestW := c.entries[0].Weight()
-	for i, e := range c.entries[1:] {
+	weakestIdx := -1
+	weakestW := float64(1<<62)
+	for i, e := range c.entries {
+		if e.Generation == 0 {
+			continue // never evict seeds
+		}
 		if w := e.Weight(); w < weakestW {
 			weakestW = w
-			weakestIdx = i + 1
+			weakestIdx = i
+		}
+	}
+
+	// If every entry is a seed (unusual but possible at startup), fall back to
+	// evicting the weakest seed so the corpus never deadlocks at capacity.
+	if weakestIdx == -1 {
+		weakestIdx = 0
+		weakestW = c.entries[0].Weight()
+		for i, e := range c.entries[1:] {
+			if w := e.Weight(); w < weakestW {
+				weakestW = w
+				weakestIdx = i + 1
+			}
 		}
 	}
 
 	evicted := c.entries[weakestIdx]
 	delete(c.hashes, evicted.Hash())
-	// Replace with last entry and shrink slice — O(1), order doesn't matter.
 	c.entries[weakestIdx] = c.entries[len(c.entries)-1]
-	c.entries[len(c.entries)-1] = nil // avoid memory leak
+	c.entries[len(c.entries)-1] = nil
 	c.entries = c.entries[:len(c.entries)-1]
 }
 
