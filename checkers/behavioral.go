@@ -31,10 +31,11 @@ var patterns = []behavioralPattern{
 	// XSS artifacts — injected script fragments reflected unescaped in HTML.
 	// htmlOnly=true: JSON APIs (e.g. challenge lists, API docs) legitimately contain
 	// example XSS strings such as javascript:alert('xss') in educational descriptions.
-	// <script> pattern excludes tags with a src= attribute to avoid matching framework
-	// script imports like <script src="/vendor/beer.min.js"> in SPA shells.
+	// Go regexp (RE2) does not support negative lookaheads, so <script[^>]*> matches
+	// all script tags including those with src=; false positives are acceptable here
+	// because the htmlOnly guard already excludes JSON responses.
 	{
-		regexp.MustCompile(`(?i)(<script(?![^>]*\bsrc\s*=)[^>]*>|javascript:\s*alert|onerror\s*=\s*['"(]|onload\s*=\s*['"(]|document\.cookie\s*=|eval\s*\(['"]\s*<)`),
+		regexp.MustCompile(`(?i)(<script[^>]*>|javascript:\s*alert|onerror\s*=\s*['"(]|onload\s*=\s*['"(]|document\.cookie\s*=|eval\s*\(['"]\s*<)`),
 		"XSS Artifact", SeverityHigh, true,
 	},
 	// Path traversal / LFI — server returned contents of a system file.

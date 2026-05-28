@@ -203,7 +203,7 @@ func Run() {
 		}
 
 		// Mark this operation as visited (any HTTP response counts).
-		opTracker.Mark(mutated.Method, mutated.PathPattern)
+		opTracker.Mark(mutated.Method, mutated.PathPattern, resp.StatusCode)
 		opsVisited, opsTotal := opTracker.Stats()
 		display.UpdateOps(opsVisited, opsTotal)
 
@@ -213,15 +213,22 @@ func Run() {
 			log.Debugf("run: CSP dump: %v", err)
 		}
 
-		// Add to corpus if coverage increased.
+		// Add to corpus if coverage increased. Only entries actually stored
+		// contribute to the displayed cov counter so NEW lines are not emitted
+		// for duplicate mutations that were rejected by the dedup filter.
 		mutated.CoverageDelta = snap.Delta()
-		mgr.Add(mutated, snap.Delta())
+		added := mgr.Add(mutated, snap.Delta())
+
+		effectiveDelta := 0
+		if added {
+			effectiveDelta = int(snap.Delta())
+		}
 
 		// Feed response values into the dynamic pool for future path-param reuse.
 		pool.Extract(body)
 
 		// Update display after every request.
-		display.Request(resp.StatusCode, int(snap.Delta()), mgr.Size(), mutated.Method, mutated.PathPattern)
+		display.Request(resp.StatusCode, effectiveDelta, mgr.Size(), mutated.Method, mutated.PathPattern)
 
 		// Run all enabled checkers and persist findings.
 		for _, chk := range activeCheckers {
