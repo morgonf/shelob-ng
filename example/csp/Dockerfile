@@ -16,10 +16,5 @@ COPY adapter.js /juice-shop/csp-adapter.js
 # This works because Juice Shop starts with: node build/app.js
 ENV NODE_OPTIONS="--require /juice-shop/csp-adapter.js"
 
-# c8 is used by 11_coverage_report.sh to convert accumulated V8 ScriptCoverage
-# into an HTML/text coverage report. Installed globally so it is available via
-# the `c8` command inside the container without a network call at report time.
-RUN ["/nodejs/bin/node", "-e", "const{execFileSync:x}=require('child_process'),p=require('path'),cli=p.join(p.dirname(process.execPath),'../lib/node_modules/npm/bin/npm-cli.js');x(process.execPath,[cli,'install','-g','c8'],{stdio:'inherit'})"]
-
 # Juice Shop: 3000  |  CSP sidecar: 8080
 EXPOSE 3000 8080
