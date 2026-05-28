@@ -911,9 +911,11 @@ make run-5    # coverage-guided — needs: make start-csp first (15 min)
 make run-6    # corpus persistence: two successive runs (5+5 min)
 make run-7    # selective checkers (three sub-scenarios)
 make run-8    # full: everything enabled (1 h; DURATION_FULL=5m for quick check)
+make run-9    # Bearer token auth (-token flag, no cookie login) (5 min)
+make run-10   # LeakageRule false-positive verification (5 min)
 
 make run-quick    # scenarios 1–4 back-to-back
-make run-all      # all 8 scenarios (run-5 needs CSP image)
+make run-all      # all 10 scenarios (run-5 needs CSP image)
 make report       # aggregate findings from all results/
 ```
 
