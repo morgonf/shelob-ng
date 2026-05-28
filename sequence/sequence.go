@@ -95,6 +95,8 @@ type Runner struct {
 	Client      *http.Client
 	TargetURL   string
 	AuthCookies []*http.Cookie
+	APIKey      string
+	Token       string
 }
 
 // Run executes seq step-by-step, propagating extracted values between steps.
@@ -172,7 +174,7 @@ func (r *Runner) Run(ctx context.Context, seq Sequence) ([]Finding, Replay) {
 // sendStep builds and sends one HTTP request, returning the response, body,
 // the full request URL string, and any transport-level error.
 func (r *Runner) sendStep(ctx context.Context, entry *corpus.CorpusEntry) (*http.Response, []byte, string, error) {
-	req, err := request.FromCorpusEntry(entry, r.TargetURL, r.AuthCookies)
+	req, err := request.FromCorpusEntry(entry, r.TargetURL, r.AuthCookies, r.APIKey, r.Token)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("build request: %w", err)
 	}

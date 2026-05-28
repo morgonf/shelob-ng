@@ -124,6 +124,8 @@ func Run() {
 		AuthCookies:  authCookies,
 		User2Cookies: user2Cookies,
 		OASRouter:    *routerPtr,
+		APIKey:       cfg.ApiKey,
+		Token:        cfg.Token,
 	}
 	activeCheckers := selectCheckers(cfg.Checker, checkCtx)
 
@@ -133,6 +135,8 @@ func Run() {
 		Client:      httpClient,
 		TargetURL:   targetURL,
 		AuthCookies: authCookies,
+		APIKey:      cfg.ApiKey,
+		Token:       cfg.Token,
 	}
 
 	// Output directory.
@@ -203,7 +207,7 @@ func Run() {
 		}
 
 		// Build and send the HTTP request.
-		req, err := request.FromCorpusEntry(mutated, targetURL, authCookies)
+		req, err := request.FromCorpusEntry(mutated, targetURL, authCookies, cfg.ApiKey, cfg.Token)
 		if err != nil {
 			log.Debugf("run: build request: %v", err)
 			continue

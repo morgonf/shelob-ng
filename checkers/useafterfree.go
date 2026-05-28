@@ -43,6 +43,7 @@ func (UseAfterFree) Check(ctx context.Context, cctx CheckContext, entry *corpus.
 	for _, c := range cctx.AuthCookies {
 		probe.AddCookie(c)
 	}
+	ApplyAuth(probe, cctx.APIKey, cctx.Token)
 
 	probeResp, err := cctx.Client.Do(probe)
 	if err != nil {

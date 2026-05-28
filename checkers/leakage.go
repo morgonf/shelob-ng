@@ -36,6 +36,13 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
 		return nil
 	}
+	// Skip auth rejections: the server never reached application logic,
+	// so no partial state could have been committed. 401/403 on collection
+	// endpoints (POST /resources → GET /resources → 200) is expected REST
+	// behaviour and is the main source of false positives.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil
+	}
 
 	probeURL := req.URL.String()
 	probe, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
@@ -46,6 +53,7 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 	for _, c := range cctx.AuthCookies {
 		probe.AddCookie(c)
 	}
+	ApplyAuth(probe, cctx.APIKey, cctx.Token)
 
 	probeResp, err := cctx.Client.Do(probe)
 	if err != nil {

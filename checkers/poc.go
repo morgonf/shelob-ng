@@ -6,6 +6,18 @@ import (
 	"strings"
 )
 
+// ApplyAuth sets static authentication headers on req.
+// Called by checkers that build their own probe requests so those probes
+// carry the same credentials as the main fuzzing requests.
+func ApplyAuth(req *http.Request, apiKey, token string) {
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if apiKey != "" {
+		req.Header.Set("X-Api-Key", apiKey)
+	}
+}
+
 // BuildCurlPOC generates a minimal curl command that reproduces req.
 // Only security-relevant headers (Cookie, Authorization, Content-Type) are
 // included so the output stays readable. Body is truncated at 400 bytes.

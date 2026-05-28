@@ -18,10 +18,12 @@ import (
 // targetURL is the base URL of the target (e.g. "http://localhost:3000").
 // authCookies are the session cookies obtained during login; they are
 // appended after any per-entry cookie parameters.
+// apiKey and token are applied via ApplyAuth; either may be empty.
 func FromCorpusEntry(
 	entry *corpus.CorpusEntry,
 	targetURL string,
 	authCookies []*http.Cookie,
+	apiKey, token string,
 ) (*http.Request, error) {
 	// Substitute {param} placeholders in the path template.
 	resolvedPath := resolvePath(entry.PathPattern, entry.PathParams)
@@ -65,7 +67,23 @@ func FromCorpusEntry(
 		req.AddCookie(c)
 	}
 
+	// Apply static auth credentials (Bearer token or API key).
+	ApplyAuth(req, apiKey, token)
+
 	return req, nil
+}
+
+// ApplyAuth sets authentication headers on req.
+// If token is non-empty, sets "Authorization: Bearer <token>".
+// If apiKey is non-empty, sets "X-Api-Key: <apiKey>".
+// Either value may be empty; empty values are ignored.
+func ApplyAuth(req *http.Request, apiKey, token string) {
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if apiKey != "" {
+		req.Header.Set("X-Api-Key", apiKey)
+	}
 }
 
 // resolvePath substitutes {paramName} placeholders in a path template

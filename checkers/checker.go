@@ -72,6 +72,11 @@ type CheckContext struct {
 	// OASRouter enables SchemaViolation to look up OpenAPI route definitions.
 	// nil means SchemaViolation checker is disabled.
 	OASRouter routers.Router
+
+	// APIKey and Token carry static auth credentials forwarded to all probe
+	// requests built by checkers. Both are optional; empty values are ignored.
+	APIKey string
+	Token  string
 }
 
 // Checker inspects one completed request+response pair and returns findings.

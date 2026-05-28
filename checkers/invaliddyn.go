@@ -48,7 +48,7 @@ func (InvalidDynamicObject) Check(ctx context.Context, cctx CheckContext, entry 
 			probe := entry.Clone()
 			probe.PathParams[paramName] = badVal
 
-			probeReq, err := request.FromCorpusEntry(probe, cctx.TargetURL, cctx.AuthCookies)
+			probeReq, err := request.FromCorpusEntry(probe, cctx.TargetURL, cctx.AuthCookies, cctx.APIKey, cctx.Token)
 			if err != nil {
 				continue
 			}

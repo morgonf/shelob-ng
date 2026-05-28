@@ -109,7 +109,12 @@ func buildNamespaceProbe(ctx context.Context, req *http.Request, entry *corpus.C
 			probe.Header.Add(key, v)
 		}
 	}
+	// Strip all auth headers so the probe carries exactly the credentials in cookies.
+	// For anonymous probes (cookies=nil) this removes all authentication;
+	// for user2 probes it ensures only user2's cookies authenticate the request.
 	probe.Header.Del("Cookie")
+	probe.Header.Del("Authorization")
+	probe.Header.Del("X-Api-Key")
 	for _, c := range cookies {
 		probe.AddCookie(c)
 	}
