@@ -284,6 +284,13 @@ func Run() {
 		// Feed response values into the dynamic pool for future path-param reuse.
 		pool.Extract(body)
 
+		// Runtime learning: when a POST succeeds, check if its response reveals
+		// an id field and the spec defines a child path — register the binding so
+		// future consumer requests get pre-seeded with real IDs.
+		if mutated.Method == "POST" && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			sequence.LearnProducer(depGraph, mutated.PathPattern, body, spec)
+		}
+
 		// Update display after every request.
 		display.Request(resp.StatusCode, effectiveDelta, mgr.Size(), mutated.Method, mutated.PathPattern)
 

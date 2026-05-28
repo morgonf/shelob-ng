@@ -26,9 +26,21 @@ func NewDependencyGraph() *DependencyGraph {
 }
 
 // Register links a consumer operation to its producer binding.
-// Safe to call only during startup (before the fuzz loop begins).
+// Always overwrites any existing binding; used by the static spec analysis at startup.
 func (g *DependencyGraph) Register(consumerMethod, consumerPath string, b *ProducerBinding) {
 	g.consumers[consumerMethod+" "+consumerPath] = b
+}
+
+// RegisterIfAbsent links a consumer to its producer only when no binding exists
+// yet for that operation. Returns true when a new binding was stored.
+// Used by runtime learning to avoid overwriting statically-discovered bindings.
+func (g *DependencyGraph) RegisterIfAbsent(consumerMethod, consumerPath string, b *ProducerBinding) bool {
+	key := consumerMethod + " " + consumerPath
+	if _, exists := g.consumers[key]; exists {
+		return false
+	}
+	g.consumers[key] = b
+	return true
 }
 
 // ProducerFor returns the ProducerBinding for the given consumer operation,

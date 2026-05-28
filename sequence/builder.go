@@ -1,6 +1,8 @@
 package sequence
 
 import (
+	"bytes"
+	"encoding/json"
 	"strings"
 
 	"shelob-ng/corpus"
@@ -247,6 +249,91 @@ func BuildDependencyGraph(spec *openapi3.T) *corpus.DependencyGraph {
 
 	log.Infof("dependency: %d consumer binding(s) registered", graph.Size())
 	return graph
+}
+
+// LearnProducer inspects a successful POST response body and registers producer-consumer
+// bindings in graph for any spec-defined child path it discovers. Called at runtime
+// so the graph learns even when the spec omits response schemas.
+//
+// For each matching GET/PUT/PATCH/DELETE /postPath/{param} in the spec, if the
+// response body contains an id-like field, a ProducerBinding is registered. Static
+// bindings (from BuildDependencyGraph) are never overwritten.
+func LearnProducer(graph *corpus.DependencyGraph, postPath string, responseBody []byte, spec *openapi3.T) {
+	if spec == nil || spec.Paths == nil {
+		return
+	}
+	paths := spec.Paths.Map()
+
+	paramName, childPath, childItem, ok := findChildPath(postPath, paths)
+	if !ok {
+		return
+	}
+
+	idField := learnIDField(responseBody, paramName)
+	if idField == "" {
+		return
+	}
+
+	parentItem := paths[postPath]
+	if parentItem == nil || parentItem.Post == nil {
+		return
+	}
+
+	postEntry, err := corpus.SeedEntry("POST", postPath, parentItem.Post)
+	if err != nil {
+		log.Debugf("dependency learn: seed POST %s: %v", postPath, err)
+		return
+	}
+
+	binding := &corpus.ProducerBinding{
+		ProducerMethod:      "POST",
+		ProducerPathPattern: postPath,
+		ProducerEntry:       postEntry,
+		IDField:             idField,
+		ParamName:           paramName,
+	}
+
+	for method, op := range childItem.Operations() {
+		if op == nil {
+			continue
+		}
+		if graph.RegisterIfAbsent(method, childPath, binding) {
+			log.Debugf("dependency learn: %s %s → POST %s (field: %q)", method, childPath, postPath, idField)
+		}
+	}
+}
+
+// learnIDField searches body for a recognized id field, checking the top level
+// and then under a "data" wrapper (common in Sequelize/Express APIs like Juice Shop).
+func learnIDField(body []byte, hint string) string {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var m map[string]interface{}
+	if err := dec.Decode(&m); err != nil {
+		return ""
+	}
+	if f := findIDInMap(m, hint); f != "" {
+		return f
+	}
+	if nested, ok := m["data"].(map[string]interface{}); ok {
+		if f := findIDInMap(nested, hint); f != "" {
+			return f
+		}
+	}
+	return ""
+}
+
+// findIDInMap returns the first id-like field name found in m.
+func findIDInMap(m map[string]interface{}, hint string) string {
+	if v, ok := m[hint]; ok && v != nil {
+		return hint
+	}
+	for _, name := range idFieldNames {
+		if v, ok := m[name]; ok && v != nil {
+			return name
+		}
+	}
+	return ""
 }
 
 // is2xx returns true when the OpenAPI response status code string represents

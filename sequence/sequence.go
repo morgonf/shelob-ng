@@ -213,20 +213,33 @@ func ExtractJSONField(body []byte, key string) interface{} {
 		return nil
 	}
 
-	val, ok := obj[key]
-	if !ok {
-		return nil
+	if val, ok := obj[key]; ok {
+		return narrowNumber(val)
 	}
+	// Try one level deep under common response wrapper keys.
+	// Many APIs (including Juice Shop) wrap the created object:
+	//   {"status":"success","data":{"id":5,...}}
+	for _, wrapper := range []string{"data", "result", "response"} {
+		if nested, ok := obj[wrapper].(map[string]interface{}); ok {
+			if val, ok := nested[key]; ok {
+				return narrowNumber(val)
+			}
+		}
+	}
+	return nil
+}
 
-	// Narrow json.Number to int64 or float64.
-	if n, ok := val.(json.Number); ok {
-		if i, err := n.Int64(); err == nil {
-			return i
-		}
-		if f, err := n.Float64(); err == nil {
-			return f
-		}
-		return n.String()
+// narrowNumber converts a json.Number to int64 or float64 for path-param precision.
+func narrowNumber(v interface{}) interface{} {
+	n, ok := v.(json.Number)
+	if !ok {
+		return v
 	}
-	return val
+	if i, err := n.Int64(); err == nil {
+		return i
+	}
+	if f, err := n.Float64(); err == nil {
+		return f
+	}
+	return n.String()
 }
