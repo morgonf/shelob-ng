@@ -1,7 +1,6 @@
 package checkers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -40,7 +39,7 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 	// Step 1: anonymous probe — detect publicly accessible endpoints.
 	// If the endpoint responds 2xx without any cookies, it is intentionally open
 	// and BOLA does not apply (e.g. GET /api/Challenges, /rest/products/search).
-	anonProbe, err := buildNamespaceProbe(ctx, req, entry, nil)
+	anonProbe, err := buildProbeWithCookies(ctx, req, entry, nil)
 	if err != nil {
 		log.Debugf("namespace: build anon probe: %v", err)
 		return nil
@@ -55,7 +54,7 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 	}
 
 	// Step 2: user2 probe — check cross-account access.
-	user2Probe, err := buildNamespaceProbe(ctx, req, entry, cctx.User2Cookies)
+	user2Probe, err := buildProbeWithCookies(ctx, req, entry, cctx.User2Cookies)
 	if err != nil {
 		log.Debugf("namespace: build user2 probe: %v", err)
 		return nil
@@ -96,39 +95,3 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 	return nil
 }
 
-// buildNamespaceProbe clones req with the given cookies substituted for the Cookie header.
-// Pass cookies=nil for an anonymous (unauthenticated) probe.
-func buildNamespaceProbe(ctx context.Context, req *http.Request, entry *corpus.CorpusEntry, cookies []*http.Cookie) (*http.Request, error) {
-	var bodyReader io.Reader
-	if req.GetBody != nil {
-		rb, err := req.GetBody()
-		if err == nil {
-			bodyReader = rb
-		}
-	}
-	if bodyReader == nil && len(entry.Body) > 0 {
-		bodyReader = bytes.NewReader(entry.Body)
-	}
-
-	probe, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bodyReader)
-	if err != nil {
-		return nil, err
-	}
-
-	// Copy original headers (content-type, accept, etc.) then replace Cookie.
-	for key, vals := range req.Header {
-		for _, v := range vals {
-			probe.Header.Add(key, v)
-		}
-	}
-	// Strip all auth headers so the probe carries exactly the credentials in cookies.
-	// For anonymous probes (cookies=nil) this removes all authentication;
-	// for user2 probes it ensures only user2's cookies authenticate the request.
-	probe.Header.Del("Cookie")
-	probe.Header.Del("Authorization")
-	probe.Header.Del("X-Api-Key")
-	for _, c := range cookies {
-		probe.AddCookie(c)
-	}
-	return probe, nil
-}

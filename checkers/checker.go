@@ -97,6 +97,7 @@ func All() []Checker {
 		LeakageRule{},
 		NameSpaceRule{},
 		BrokenFunctionLevelAuthorization{},
+		AuthBypassRule{},
 		SchemaViolation{},
 	}
 }

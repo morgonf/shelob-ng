@@ -79,7 +79,7 @@ func ParseCliArgs() Config {
 	cspDisable := flag.Bool("csp-disable", false, "disable coverage feedback (run in pure-random mode)")
 	corpusDir := flag.String("corpus-dir", "", "directory for corpus persistence; empty = in-memory only")
 	payloads := flag.String("payloads", "", "security payload files as key=path pairs (e.g. sqli=/tmp/sqli.txt,xss=/tmp/xss.txt)")
-	checker := flag.String("checker", "", "comma-separated checkers to enable (empty = all); valid names: BehavioralPatterns,UseAfterFree,InvalidDynamicObject,LeakageRule,NameSpaceRule,BFLA,SchemaViolation")
+	checker := flag.String("checker", "", "comma-separated checkers to enable (empty = all); valid names: BehavioralPatterns,UseAfterFree,InvalidDynamicObject,LeakageRule,NameSpaceRule,BFLA,AuthBypassRule,SchemaViolation")
 	user2 := flag.String("user2", "", "second user for BOLA/NameSpaceRule checker")
 	pass2 := flag.String("pass2", "", "second user password for BOLA/NameSpaceRule checker")
 	sarifOut := flag.String("sarif", "", "write SARIF 2.1.0 report to this path (e.g. results.sarif)")

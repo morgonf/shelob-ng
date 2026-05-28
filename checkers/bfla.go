@@ -1,7 +1,6 @@
 package checkers
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -64,7 +63,7 @@ func (BrokenFunctionLevelAuthorization) Check(
 	// Anonymous probe: skip if the endpoint is publicly accessible.
 	// A function reachable without any credentials cannot be a role-restriction
 	// failure — it is intentionally open (e.g. an admin login page).
-	anonProbe, err := buildBFLAProbe(ctx, req, entry, nil)
+	anonProbe, err := buildProbeWithCookies(ctx, req, entry, nil)
 	if err != nil {
 		log.Debugf("bfla: build anon probe: %v", err)
 		return nil
@@ -78,7 +77,7 @@ func (BrokenFunctionLevelAuthorization) Check(
 	}
 
 	// User2 probe: check whether the role boundary is enforced.
-	user2Probe, err := buildBFLAProbe(ctx, req, entry, cctx.User2Cookies)
+	user2Probe, err := buildProbeWithCookies(ctx, req, entry, cctx.User2Cookies)
 	if err != nil {
 		log.Debugf("bfla: build user2 probe: %v", err)
 		return nil
@@ -123,36 +122,3 @@ func isPrivilegedEndpoint(entry *corpus.CorpusEntry) bool {
 	return strings.Contains(strings.ToLower(entry.OperationID), "admin")
 }
 
-// buildBFLAProbe clones req with the given cookies substituted for the Cookie
-// header. All existing auth headers are stripped first. Pass cookies=nil for
-// an anonymous (unauthenticated) probe.
-func buildBFLAProbe(ctx context.Context, req *http.Request, entry *corpus.CorpusEntry, cookies []*http.Cookie) (*http.Request, error) {
-	var bodyReader io.Reader
-	if req.GetBody != nil {
-		if rb, err := req.GetBody(); err == nil {
-			bodyReader = rb
-		}
-	}
-	if bodyReader == nil && len(entry.Body) > 0 {
-		bodyReader = bytes.NewReader(entry.Body)
-	}
-
-	probe, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bodyReader)
-	if err != nil {
-		return nil, err
-	}
-
-	for key, vals := range req.Header {
-		for _, v := range vals {
-			probe.Header.Add(key, v)
-		}
-	}
-	probe.Header.Del("Cookie")
-	probe.Header.Del("Authorization")
-	probe.Header.Del("X-Api-Key")
-
-	for _, c := range cookies {
-		probe.AddCookie(c)
-	}
-	return probe, nil
-}
