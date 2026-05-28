@@ -1073,4 +1073,8 @@ See `adapters/` for reference implementations. An adapter needs to:
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+Apache-2.0 — see [LICENSE](LICENSE).
+
+shelob-ng is based on [Bondifuzz/shelob](https://github.com/Bondifuzz/shelob),
+also licensed under Apache-2.0. Attribution and a list of modified packages are
+in [NOTICE](NOTICE).

@@ -1,0 +1,32 @@
+shelob-ng
+Copyright (c) 2026 Andrey Kuznetcov
+
+This product is based on Shelob, originally developed by Bondifuzz:
+  https://github.com/Bondifuzz/shelob
+
+  Copyright (c) Bondifuzz
+  Licensed under the Apache License, Version 2.0
+
+The following packages were derived from or inspired by the original Shelob project:
+  auth/        — cookie-based login and token extraction
+  openapi/     — OpenAPI spec loading and router construction
+  request/     — HTTP request assembly from spec parameters
+  bodyParams/  — request body generation
+  generateInput/ — random data generation per schema type
+  security/    — security header helpers
+  urlParams/   — path, query, header, cookie parameter handling
+  response/    — response validation (legacy path)
+  logging/     — JSON crash/test log files
+
+The following packages are new in shelob-ng and were not part of the original Shelob:
+  corpus/      — AFL-style weighted corpus with persistence and dynamic value pool
+  mutator/     — structural, byte-level, and security payload mutation strategies
+  coverage/    — Coverage Sidecar Protocol (CSP) client and no-op stub
+  checkers/    — modular security checkers (BehavioralPatterns, UseAfterFree,
+                 InvalidDynamicObject, LeakageRule, NameSpaceRule, SchemaViolation)
+  sequence/    — stateful CRUD sequence builder, runner, and replay persistence
+  apicov/      — per-operation API spec coverage tracker
+  ui/          — libfuzzer-style terminal display (INITED/NEW/pulse/FINDING/DONE)
+  run/         — coverage-guided main fuzzing loop (fully rewritten)
+  adapters/    — CSP adapter reference implementations (Node.js, Go, Python, C)
+  example/     — OWASP Juice Shop walkthrough (10 scenarios, Makefile, docker-compose)
