@@ -72,7 +72,9 @@ func (SchemaViolation) Check(ctx context.Context, cctx CheckContext, _ *corpus.C
 			Detail:     fmt.Sprintf("%s %s → %d: %v", req.Method, req.URL.Path, resp.StatusCode, err),
 			Method:     req.Method,
 			URL:        req.URL.String(),
-			StatusCode: resp.StatusCode,
+			StatusCode:  resp.StatusCode,
+			PathPattern: route.Path,
+			POC:         BuildCurlPOC(req, body),
 		}}
 	}
 	return nil

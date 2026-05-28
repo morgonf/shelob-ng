@@ -76,7 +76,9 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 			Detail:     fmt.Sprintf("%s %s: user1 got %d, user2 also got %d (expected 401/403)", req.Method, req.URL.String(), resp.StatusCode, probeResp.StatusCode),
 			Method:     req.Method,
 			URL:        req.URL.String(),
-			StatusCode: probeResp.StatusCode,
+			StatusCode:  probeResp.StatusCode,
+			PathPattern: entry.PathPattern,
+			POC:         BuildCurlPOC(user2Probe, entry.Body),
 		}}
 	}
 	return nil

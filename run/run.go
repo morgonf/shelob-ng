@@ -170,6 +170,11 @@ func Run() {
 	checkerSem := make(chan struct{}, checkerConcurrency)
 	var checkerWg sync.WaitGroup
 
+	// Dedup set for findings: keyed by Finding.DedupeKey() so the same class
+	// of issue on the same endpoint is written exactly once per session.
+	// sync.Map is safe for concurrent access from checker goroutines.
+	var seenFindings sync.Map
+
 	start := time.Now()
 	var seqTick int
 
@@ -272,8 +277,9 @@ func Run() {
 				}()
 				findings := chk.Check(context.Background(), checkCtx, ent, r, rs, b)
 				for _, f := range findings {
-					logFinding(f, outDir)
-					display.Finding(f.Checker, f.Severity, f.Title, f.URL)
+					if logFinding(f, outDir, &seenFindings) {
+						display.Finding(f.Checker, f.Severity, f.Title, f.URL)
+					}
 				}
 			}()
 		}
@@ -331,32 +337,44 @@ func doRequest(client *http.Client, req *http.Request) (*http.Response, []byte, 
 	return resp, body, nil
 }
 
-// logFinding writes a Finding as a timestamped JSON file in outputDir/findings/.
-func logFinding(f checkers.Finding, outputDir string) {
+// logFinding writes a Finding as a JSON file in outputDir/findings/ if it has
+// not been seen before (dedup). Returns true when the finding was new and written.
+// The file is named by DedupeKey so identical findings overwrite each other
+// rather than accumulating. seen is a *sync.Map shared across all checker goroutines.
+func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
+	key := f.DedupeKey()
+	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
+		return false // duplicate
+	}
+
 	dir := filepath.Join(outputDir, "findings")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Warnf("logFinding: mkdir %s: %v", dir, err)
-		return
+		return true // new finding, even if we can't write it
 	}
 
-	ts := time.Now().Format("20060102_150405_000")
-	// Sanitize checker name for use in filename.
+	// Filename derived from dedup key (checker + method + path) — stable across runs,
+	// so re-running the fuzzer overwrites rather than duplicates the same finding.
 	safe := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
 			return r
 		}
 		return '_'
-	}, f.Checker)
-	path := filepath.Join(dir, safe+"_"+ts+".json")
+	}, key)
+	if len(safe) > 120 {
+		safe = safe[:120]
+	}
+	path := filepath.Join(dir, safe+".json")
 
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		log.Warnf("logFinding: marshal: %v", err)
-		return
+		return true
 	}
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		log.Warnf("logFinding: write %s: %v", path, err)
 	}
+	return true
 }
 
 // logSequenceFinding writes a sequence.Finding as a timestamped JSON file.

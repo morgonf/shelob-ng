@@ -72,24 +72,45 @@ for checker in "${!CHECKER_COUNT[@]}"; do
 done | sort -t' ' -k2 -rn || true
 
 # -----------------------------------------------------------------------
-# High-severity findings detail
+# All-severity findings detail (deduplicated — one file per unique issue)
 # -----------------------------------------------------------------------
+echo ""
+echo -e "${BOLD}Unique findings (deduplicated):${NC}"
+
+_print_finding() {
+    local f="$1"
+    if command -v jq &>/dev/null; then
+        jq -r '
+          "  [\(.severity | ascii_upcase)] [\(.checker)] \(.title)",
+          "  Operation: \(.method) \(.path_pattern // .url)",
+          "  URL:       \(.url)",
+          "  Detail:    \(.detail)",
+          (if .poc then "  POC:\n" + (.poc | split("\n") | map("    " + .) | join("\n")) else empty end),
+          ""
+        ' "$f"
+    else
+        echo "  $f"
+        echo ""
+    fi
+}
+
 if [ "$TOTAL_HIGH" -gt 0 ]; then
-    echo ""
-    echo -e "${BOLD}${RED}High-severity findings:${NC}"
+    echo -e "${RED}--- HIGH severity ---${NC}"
     for f in "${RESULTS_BASE}"/**/findings/*.json; do
         [ -f "$f" ] || continue
-        sev=$(grep -oE '"severity": *"[^"]*"' "$f" 2>/dev/null | cut -d'"' -f4)
+        sev=$(jq -r '.severity' "$f" 2>/dev/null)
         [ "$sev" = "high" ] || continue
+        _print_finding "$f"
+    done
+fi
 
-        if command -v jq &>/dev/null; then
-            jq -r '"  [\(.checker)] \(.title)\n  URL: \(.url)\n  Detail: \(.detail)\n"' "$f"
-        else
-            echo "  File: $f"
-            grep -o '"title":"[^"]*"' "$f" | cut -d'"' -f4
-            grep -o '"url":"[^"]*"' "$f" | cut -d'"' -f4
-            echo ""
-        fi
+if [ "$TOTAL_MED" -gt 0 ]; then
+    echo -e "${YELLOW}--- MEDIUM severity ---${NC}"
+    for f in "${RESULTS_BASE}"/**/findings/*.json; do
+        [ -f "$f" ] || continue
+        sev=$(jq -r '.severity' "$f" 2>/dev/null)
+        [ "$sev" = "medium" ] || continue
+        _print_finding "$f"
     done
 fi
 
@@ -110,18 +131,11 @@ fi
 # -----------------------------------------------------------------------
 # Quick reproduction guide
 # -----------------------------------------------------------------------
-if [ "$TOTAL_FINDINGS" -gt 0 ]; then
-    echo ""
-    echo -e "${BOLD}Reproducing a finding manually:${NC}"
-    # Pick the first high-sev finding, or any finding.
-    SAMPLE=$(find "${RESULTS_BASE}" -path "*/findings/*.json" 2>/dev/null | head -1 || true)
-    if [ -n "$SAMPLE" ] && command -v jq &>/dev/null; then
-        METHOD=$(jq -r '.method' "$SAMPLE")
-        URL=$(jq -r '.url' "$SAMPLE")
-        echo "  # Example (${SAMPLE##*/}):"
-        echo "  curl -v -X ${METHOD} '${URL}'"
-    fi
-fi
+# POC commands are embedded in each finding JSON (field "poc").
+# The section above already prints them for each finding.
+# To extract all POCs at once:
+#   jq -r 'select(.poc) | "# \(.checker) \(.title)\n" + .poc' \
+#       results/*/findings/*.json
 
 # -----------------------------------------------------------------------
 # API spec coverage (api-coverage.json written by fuzzer after each run)

@@ -60,7 +60,9 @@ func (UseAfterFree) Check(ctx context.Context, cctx CheckContext, entry *corpus.
 			Detail:     fmt.Sprintf("DELETE returned %d; subsequent GET returned %d (expected 404)", resp.StatusCode, probeResp.StatusCode),
 			Method:     http.MethodGet,
 			URL:        probeURL,
-			StatusCode: probeResp.StatusCode,
+			StatusCode:  probeResp.StatusCode,
+			PathPattern: entry.PathPattern,
+			POC:         BuildCurlPOC(probe, nil),
 		}}
 	}
 	return nil

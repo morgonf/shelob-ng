@@ -63,7 +63,9 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 			Detail:     fmt.Sprintf("POST %s returned %d (rejected), but GET returned %d (resource exists)", probeURL, resp.StatusCode, probeResp.StatusCode),
 			Method:     http.MethodGet,
 			URL:        probeURL,
-			StatusCode: probeResp.StatusCode,
+			StatusCode:  probeResp.StatusCode,
+			PathPattern: entry.PathPattern,
+			POC:         BuildCurlPOC(probe, nil),
 		}}
 	}
 	return nil

@@ -25,13 +25,29 @@ const (
 // Finding represents one security issue detected by a checker.
 // Written as a JSON file in the output directory alongside corpus crashes.
 type Finding struct {
-	Checker    string `json:"checker"`    // name of the checker that produced this
-	Severity   string `json:"severity"`   // high / medium / low / info
-	Title      string `json:"title"`      // short human-readable description
-	Detail     string `json:"detail"`     // evidence: matched pattern, status codes, etc.
-	Method     string `json:"method"`     // HTTP method of the probe request
-	URL        string `json:"url"`        // full URL of the probe request
-	StatusCode int    `json:"status_code"` // HTTP status of the probe response
+	Checker     string `json:"checker"`               // name of the checker that produced this
+	Severity    string `json:"severity"`               // high / medium / low / info
+	Title       string `json:"title"`                  // short human-readable description
+	Detail      string `json:"detail"`                 // evidence: matched pattern, status codes, etc.
+	Method      string `json:"method"`                 // HTTP method of the probe request
+	URL         string `json:"url"`                    // full URL of the probe request
+	StatusCode  int    `json:"status_code"`            // HTTP status of the probe response
+	PathPattern string `json:"path_pattern,omitempty"` // OpenAPI path template, e.g. /api/Cards/{id}
+	POC         string `json:"poc,omitempty"`           // curl command to reproduce
+}
+
+// DedupeKey returns a stable string that identifies this class of finding.
+// Two findings with the same key are considered duplicates: same checker
+// detecting the same issue on the same API operation.
+// Uses PathPattern (the OpenAPI template) when available so that probes
+// with different concrete values (e.g. /api/Cards/-1 vs /api/Cards/0)
+// collapse to one finding per endpoint.
+func (f Finding) DedupeKey() string {
+	scope := f.PathPattern
+	if scope == "" {
+		scope = f.URL
+	}
+	return f.Checker + "\x00" + f.Method + "\x00" + scope
 }
 
 // CheckContext carries resources shared across all checker invocations.

@@ -70,7 +70,9 @@ func (InvalidDynamicObject) Check(ctx context.Context, cctx CheckContext, entry 
 					Detail:     fmt.Sprintf("param %q set to %v caused HTTP %d", paramName, badVal, probeResp.StatusCode),
 					Method:     probe.Method,
 					URL:        probeReq.URL.String(),
-					StatusCode: probeResp.StatusCode,
+					StatusCode:  probeResp.StatusCode,
+				PathPattern: entry.PathPattern,
+				POC:         BuildCurlPOC(probeReq, nil),
 				})
 			}
 		}
