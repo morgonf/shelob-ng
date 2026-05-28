@@ -269,7 +269,8 @@ func Run() {
 		// Mark this operation as visited (any HTTP response counts).
 		opTracker.Mark(mutated.Method, mutated.PathPattern, resp.StatusCode)
 		opsVisited, opsTotal := opTracker.Stats()
-		display.UpdateOps(opsVisited, opsTotal)
+		opsSucceeded, _ := opTracker.SuccessStats()
+		display.UpdateOps(opsVisited, opsSucceeded, opsTotal)
 
 		// Dump coverage after the request.
 		snap, err := covClient.Dump(context.Background())

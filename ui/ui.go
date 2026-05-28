@@ -65,8 +65,9 @@ type Logger struct {
 	s5xx       int64
 
 	// API spec coverage: updated by UpdateOps()
-	opsVisited int
-	opsTotal   int
+	opsVisited   int
+	opsSucceeded int // operations with at least one 2xx response
+	opsTotal     int
 
 	startTime time.Time
 	lastPrint time.Time
@@ -88,10 +89,12 @@ func New(w io.Writer, noColor bool) *Logger {
 }
 
 // UpdateOps updates the API spec coverage counters shown in status lines.
+// visited = operations with any HTTP response; succeeded = operations with ≥1 2xx.
 // Call after each Mark() to keep the display current.
-func (l *Logger) UpdateOps(visited, total int) {
+func (l *Logger) UpdateOps(visited, succeeded, total int) {
 	l.mu.Lock()
 	l.opsVisited = visited
+	l.opsSucceeded = succeeded
 	l.opsTotal = total
 	l.mu.Unlock()
 }
@@ -195,7 +198,7 @@ func (l *Logger) Done() {
 	opsStr := ""
 	if l.opsTotal > 0 {
 		pct := 100 * l.opsVisited / l.opsTotal
-		opsStr = fmt.Sprintf("  ops: %d/%d (%d%%)", l.opsVisited, l.opsTotal, pct)
+		opsStr = fmt.Sprintf("  ops: %d/%d (%d%%)  ok: %d/%d", l.opsVisited, l.opsTotal, pct, l.opsSucceeded, l.opsTotal)
 	}
 
 	fmt.Fprintln(l.out)
@@ -226,7 +229,7 @@ func (l *Logger) emit(event, eventColor, extra string) {
 
 	opsStr := ""
 	if l.opsTotal > 0 {
-		opsStr = fmt.Sprintf("  ops: %3d/%-3d", l.opsVisited, l.opsTotal)
+		opsStr = fmt.Sprintf("  ops: %3d/%-3d  ok: %3d/%-3d", l.opsVisited, l.opsTotal, l.opsSucceeded, l.opsTotal)
 	}
 
 	fmt.Fprintf(l.out,
