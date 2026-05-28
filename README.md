@@ -26,11 +26,12 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 6. [Mutation strategies](#mutation-strategies)
 7. [Security checkers](#security-checkers)
 8. [Stateful sequence testing](#stateful-sequence-testing)
-9. [Status display](#status-display)
-10. [Output format](#output-format)
-11. [All flags](#all-flags)
-12. [Coverage Sidecar Protocol (CSP)](#coverage-sidecar-protocol)
-13. [Example: OWASP Juice Shop](#example-owasp-juice-shop)
+9. [Producer-consumer dependency graph](#producer-consumer-dependency-graph)
+10. [Status display](#status-display)
+11. [Output format](#output-format)
+12. [All flags](#all-flags)
+13. [Coverage Sidecar Protocol (CSP)](#coverage-sidecar-protocol)
+14. [Example: OWASP Juice Shop](#example-owasp-juice-shop)
 
 ---
 
@@ -40,7 +41,9 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 |---------|-------------|
 | **OpenAPI-guided** | Seeds corpus from spec; all 3.x parameter locations supported (path, query, header, cookie, body) |
 | **AFL-style corpus** | Inputs that increase code coverage are saved, weighted by delta, and preferentially mutated |
-| **Three mutators** | Structural (type-aware edge cases), byte-level (bit/byte flips), security payloads (external wordlists) |
+| **Three mutators** | Structural (type-aware, grammar-constrained), byte-level (bit/byte flips), security payloads (external wordlists) |
+| **Grammar-constrained mutation** | Structural mutator reads `minimum`, `maximum`, `minLength`, `maxLength`, `enum` from the spec — 70% of mutations stay within valid bounds to reach business logic; 30% test boundary violations |
+| **Producer-consumer graph** | Links `POST /X` (producer) to `GET|PUT|DELETE /X/{id}` (consumer); pre-executes the producer to inject a real resource ID before the consumer request; learns at runtime when the spec lacks response schemas |
 | **Six checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, SchemaViolation |
 | **BOLA / IDOR detection** | NameSpaceRule replays every 2xx request with a second-user session; cross-account access = finding |
 | **Stateful CRUD sequences** | Auto-derived from spec: create → read → delete → probe; detects server-side UseAfterFree |
@@ -50,6 +53,7 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 | **API coverage report** | Tracks reached (any response) and succeeded (2xx) per OpenAPI operation |
 | **Corpus persistence** | Save/load corpus to disk; resume long runs or share interesting inputs |
 | **Dynamic value pool** | Harvests real IDs and tokens from responses; reuses them as path parameters |
+| **Clean shutdown** | `Ctrl+C` (SIGINT/SIGTERM) finishes the current iteration then saves `api-coverage.json` and corpus before exiting |
 | **RPS limiter** | Optional requests-per-second cap for rate-limited or production-adjacent targets |
 | **libfuzzer-style UI** | Event-driven terminal output: INITED / NEW / pulse / FINDING / DONE |
 
@@ -122,10 +126,12 @@ shelob-ng/
 │   ├── selection.go          prefix-sum weighted random select O(log n)
 │   ├── pool.go               DynamicValuePool: ring buffer, 70/30 real/random
 │   ├── seed.go               SeedFromSpec: 3 entries per operation
+│   ├── dependency.go         DependencyGraph: maps consumers → ProducerBinding; RegisterIfAbsent
 │   └── storage.go            Save/Load JSON corpus to disk
 ├── mutator/
 │   ├── mutator.go            Mutator interface, weighted orchestration
-│   ├── structural.go         type-aware edge cases (string/int/float/body)
+│   ├── schema_index.go       SchemaIndex: O(1) FieldConstraint lookup by (method, path, location, name)
+│   ├── structural.go         grammar-constrained + type-aware edge case mutations
 │   ├── bytelevel.go          6 byte-level ops on raw body
 │   ├── security.go           inject payload strings into string fields
 │   ├── fieldpicker.go        pick field by location (body 2× weight)
@@ -145,8 +151,8 @@ shelob-ng/
 │   ├── namespace.go          BOLA/IDOR: user2 replay
 │   └── schema.go             OpenAPI response validation (real body)
 ├── sequence/
-│   ├── builder.go            derive CRUD sequences from spec paths
-│   ├── sequence.go           Runner.Run: stateful multi-step execution
+│   ├── builder.go            derive CRUD sequences + dependency graph; LearnProducer (runtime)
+│   ├── sequence.go           Runner.Run: stateful multi-step execution; ExtractJSONField
 │   └── replay.go             SaveReplay: persist steps + findings to JSON
 ├── request/
 │   └── from_entry.go         build *http.Request from CorpusEntry; ApplyAuth: set Bearer/API-key headers
@@ -492,6 +498,12 @@ Three strategies are composed with weighted random selection
 │  Pick one field:  path > query > header > cookie > body          │
 │                   (body has 2× selection weight)                 │
 │                                                                  │
+│  When the OpenAPI spec declares constraints for the field,       │
+│  grammar-constrained mutation applies:                            │
+│    70%  →  valid value within [minimum, maximum] / enum          │
+│    30%  →  boundary violation (one step outside the valid range) │
+│                                                                  │
+│  Without constraints, unconstrained mutation applies:            │
 │  string  ─▶  edge cases: "", " ", "null", "\x00", 256×"A"       │
 │              truncate to random prefix                            │
 │              duplicate: v + v                                    │
@@ -501,7 +513,8 @@ Three strategies are composed with weighted random selection
 │  bool    ─▶  flip                                                │
 │  body    ─▶  inject poison field  (__proto__, $where, etc.)      │
 │              remove random leaf field                             │
-│              mutate random leaf value                             │
+│              mutate random leaf value (constraints applied        │
+│              per field when schema declares them)                 │
 └──────────────────────────────────────────────────────────────────┘
 
 ┌──────────────────────────────────────────────────────────────────┐
@@ -655,6 +668,51 @@ and extracted values, enabling manual reproduction:
 
 ---
 
+## Producer-consumer dependency graph
+
+When the fuzzer selects `GET /api/Users/{id}`, a random or pooled user ID may
+not correspond to any existing resource, producing a 404. The
+producer-consumer graph solves this by pre-executing the creator before each
+consumer request.
+
+### How it works
+
+```
+Spec analysis (startup)
+  POST /api/Users  returns {"id": 7, ...}
+    └─▶ registers bindings:
+          GET    /api/Users/{id}  → producer: POST /api/Users
+          PUT    /api/Users/{id}  → producer: POST /api/Users
+          DELETE /api/Users/{id}  → producer: POST /api/Users
+
+Runtime learning (LearnProducer)
+  Spec has empty response schemas? No problem.
+  After every successful POST → inspect actual response body:
+    • check top-level fields (e.g. {"id": 7, ...})
+    • check nested "data" wrapper ({"status":"success","data":{"id":7,...}})
+  If an id/uuid/key field is found and the spec defines a child path → register.
+
+Before each consumer request
+  1. Execute producer:  POST /api/Users  →  201 {"data": {"id": 7}}
+  2. Extract id:        ExtractJSONField(body, "id")  →  7
+  3. Inject into entry: PathParams["id"] = 7
+  4. Send consumer:     GET /api/Users/7  →  200  (real resource!)
+
+On producer failure (4xx / 5xx / network error):
+  Consumer proceeds with pooled or random id (graceful degradation).
+  Extracted body is still fed into DynamicValuePool for future reuse.
+```
+
+### Why 70%+ of consumer requests succeed with a real spec
+
+On APIs that declare response schemas on POST operations, the graph is built
+at startup from the spec alone. On APIs with sparse specs (such as the Juice
+Shop example), the graph fills in at runtime as POSTs succeed. Either way,
+consumer requests carry real IDs within seconds of the first successful POST
+instead of wasting iterations on guaranteed 404s.
+
+---
+
 ## Status display
 
 shelob-ng prints libfuzzer-style event lines to stdout:
@@ -681,13 +739,13 @@ DONE    #8423     cov: 51204  corpus:  1831  ops: 93/95 (97%)  req/s:  27.4  fin
 
 | Column | Meaning |
 |--------|---------|
-| `#N` | Main-loop iteration count (checker probes not counted here) |
+| `#N` | Main-loop iteration count (checker probes and producer pre-executions not counted) |
 | event | `INITED` / `NEW` / `pulse` / `FINDING` / `DONE` |
-| `cov:` | Cumulative new coverage blocks (sum of all CSP deltas; 0 in pure-random mode) |
-| `corpus:` | Current corpus size |
-| `ops: V/T` | API spec operations: V reached, T total |
-| `req/s:` | Average main-loop iterations per second since start |
-| `2xx/4xx/5xx:` | Response status code distribution |
+| `cov:` | Cumulative new corpus entries added during fuzzing. **CSP mode:** increments on every new V8 basic block discovered. **Pure-random mode:** increments only on first 2xx per API operation — stabilises once all reachable endpoints have been visited at least once |
+| `corpus:` | Current corpus size (seeds + entries added during fuzzing) |
+| `ops: V/T` | API spec operations: V reached (any response), T total |
+| `req/s:` | Main-loop request rate in the most recent sampling interval |
+| `2xx/4xx/5xx:` | Response status code distribution (main-loop requests only) |
 
 ### Event types
 
@@ -718,6 +776,11 @@ Disable colors: `-no-color` flag, `NO_COLOR=1` env var, or `TERM=dumb`.
     CRUD__api_Users_20260528_060012.json                ← only when findings present
   api-coverage.json                                     ← spec coverage report
 ```
+
+> **`api-coverage.json` is written at the end of the run**, whether the duration
+> expires normally or the process is interrupted with `Ctrl+C` (SIGINT/SIGTERM).
+> Killing the process with `SIGKILL` bypasses the signal handler and the file
+> will not be written.
 
 Filenames are derived from the dedup key (`checker + method + path_pattern`):
 the first 80 sanitised characters for readability plus an 8-character SHA-256
