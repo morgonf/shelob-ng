@@ -255,7 +255,11 @@ func Run() {
 
 		effectiveDelta := 0
 		if added {
-			effectiveDelta = int(snap.Delta())
+			// Use delta (not snap.Delta()) so that API-novelty entries
+			// (synthetic delta=1) also fire a NEW event and increment cov:.
+			// Without this, corpus growth from first-2xx signals is silent:
+			// corpus size grows but cov: stays at 0 and no NEW line appears.
+			effectiveDelta = int(delta)
 		}
 
 		// Feed response values into the dynamic pool for future path-param reuse.
