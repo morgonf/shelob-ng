@@ -368,35 +368,38 @@ func safeFileName(key string) string {
 }
 
 // logFinding writes a Finding as a JSON file in outputDir/findings/ if it has
-// not been seen before (dedup). Returns true when the finding was new and written.
+// not been seen before (dedup). Returns true when the finding was new AND written.
 //
-// The directory is created BEFORE the dedup key is recorded in seen, so that a
-// transient filesystem error does not permanently suppress the finding: on the
-// next occurrence, MkdirAll will succeed and the finding will be written.
+// Error-handling contract: the dedup key is stored in seen only after both
+// MkdirAll and MarshalIndent succeed. On WriteFile failure the key is deleted
+// from seen so the finding can be retried on the next occurrence. This ensures
+// display.Finding is called only when a JSON file exists on disk.
 // seen is a *sync.Map shared across all checker goroutines.
 func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
-	// Create the directory before touching the dedup map. If MkdirAll fails,
-	// we return false without poisoning the key — the finding can be retried.
 	dir := filepath.Join(outputDir, "findings")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Warnf("logFinding: mkdir %s: %v", dir, err)
-		return false
+		return false // key not stored — retryable
 	}
 
+	// Marshal before claiming the key: if serialization fails the finding is
+	// not suppressed and will be retried on the next occurrence.
 	key := f.DedupeKey()
+	b, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		log.Warnf("logFinding: marshal: %v", err)
+		return false // key not stored — retryable
+	}
+
 	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
 		return false // duplicate
 	}
 
 	path := filepath.Join(dir, safeFileName(key)+".json")
-
-	b, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		log.Warnf("logFinding: marshal: %v", err)
-		return true
-	}
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		log.Warnf("logFinding: write %s: %v", path, err)
+		seen.Delete(key) // release the key so the next occurrence can retry
+		return false
 	}
 	return true
 }
@@ -404,7 +407,10 @@ func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
 // logSequenceFinding writes a sequence.Finding as a JSON file in outputDir/findings/
 // if it has not been seen before (dedup). Uses the same seen map as logFinding so
 // the dedup is consistent across checker and sequence findings.
-// Returns true when the finding was new and written.
+// Returns true when the finding was new AND written.
+//
+// Same error-handling contract as logFinding: marshal before claiming the key;
+// delete key on WriteFile failure so the finding can be retried.
 func logSequenceFinding(f sequence.Finding, outputDir string, seen *sync.Map) bool {
 	dir := filepath.Join(outputDir, "findings")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -412,21 +418,33 @@ func logSequenceFinding(f sequence.Finding, outputDir string, seen *sync.Map) bo
 		return false
 	}
 
-	// Dedup key: sequence name + method + URL path (no query string).
-	key := "Sequence:" + f.SequenceName + "\x00" + f.Method + "\x00" + f.URL
+	// Build the dedup key from the URL path only — strip any query string.
+	// f.URL is req.URL.String() from sendStep, which includes the full URL with
+	// query parameters. Using the full URL as the key means two sequence runs
+	// against the same endpoint but different mutated query strings get different
+	// keys and both write separate finding files. Stripping the query string
+	// collapses them to one finding per logical (sequence, method, path) tuple.
+	baseURL := f.URL
+	if idx := strings.IndexByte(f.URL, '?'); idx >= 0 {
+		baseURL = f.URL[:idx]
+	}
+	key := "Sequence:" + f.SequenceName + "\x00" + f.Method + "\x00" + baseURL
+
+	b, err := json.MarshalIndent(f, "", "  ")
+	if err != nil {
+		log.Warnf("logSequenceFinding: marshal: %v", err)
+		return false // key not stored — retryable
+	}
+
 	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
 		return false // duplicate
 	}
 
 	path := filepath.Join(dir, "seq_"+safeFileName(key)+".json")
-
-	b, err := json.MarshalIndent(f, "", "  ")
-	if err != nil {
-		log.Warnf("logSequenceFinding: marshal: %v", err)
-		return true
-	}
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		log.Warnf("logSequenceFinding: write %s: %v", path, err)
+		seen.Delete(key)
+		return false
 	}
 	return true
 }

@@ -60,12 +60,18 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 		log.Debugf("namespace: build user2 probe: %v", err)
 		return nil
 	}
-	// buildNamespaceProbe strips all auth headers to ensure only the provided
-	// cookies authenticate the request. When the target also requires a static
-	// API key or Bearer token on every request, re-add it here so the user2
-	// probe is not silently rejected as unauthenticated — a false negative that
-	// would make the entire BOLA check invisible on API-key-required targets.
-	ApplyAuth(user2Probe, cctx.APIKey, cctx.Token)
+	// Re-apply the static API key (if set) so the probe is not silently rejected
+	// on API-key-required targets. API keys are app-level shared credentials, not
+	// user identifiers, so carrying user1's key on user2's probe is correct.
+	//
+	// Do NOT re-apply the Bearer token: a Bearer token encodes user1's identity
+	// (e.g. JWT sub claim). Sending it on the user2 probe would authenticate the
+	// probe as user1, defeating the cross-account BOLA check entirely. Targets
+	// that use token-based identity without cookies are not currently supported
+	// by NameSpaceRule; user2 must authenticate via cookies (-user2 / -pass2).
+	if cctx.APIKey != "" {
+		user2Probe.Header.Set("X-Api-Key", cctx.APIKey)
+	}
 	probeResp, err := cctx.Client.Do(user2Probe)
 	if err != nil {
 		log.Debugf("namespace: user2 probe failed: %v", err)

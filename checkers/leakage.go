@@ -39,18 +39,27 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 	// Skip pure authentication failures (401): the auth middleware rejected the
 	// request before any application logic ran, so no state could have been
 	// committed to the database.
-	// Do NOT skip 403 (authorization failure): a handler may have already written
-	// a row and then checked ownership, returning 403 after the fact. That pattern
-	// is exactly what LeakageRule is meant to catch.
 	if resp.StatusCode == http.StatusUnauthorized {
 		return nil
 	}
 
-	// Probe the resource at its canonical path — without any query parameters.
-	// Mutation-injected query strings (e.g. q=%00) can cause the server to reject
-	// the GET probe with 400 or 404 even when the resource exists, masking genuine
-	// partial-write leakage.
-	probeURL := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
+	// Skip collection endpoints (no path parameters). POST /collection → 4xx
+	// followed by GET /collection → 200 is normal REST behaviour: the collection
+	// is readable regardless of whether the create attempt succeeded. Only
+	// singleton endpoints (with at least one path parameter) can exhibit genuine
+	// commit-then-validate leakage where a partial write is readable at the
+	// specific resource URL. This also eliminates false positives from
+	// RBAC-protected POST endpoints (403) where the collection GET is public.
+	if len(entry.PathParams) == 0 {
+		return nil
+	}
+
+	// Build the probe URL from the target base URL and the request path.
+	// Avoid reconstructing from req.URL.Scheme/Host: those fields may be empty
+	// when the request was built from a relative URL (e.g. when -url is omitted
+	// and spec server URLs are relative), producing a malformed "://host/path".
+	// cctx.TargetURL is always an absolute URL validated at fuzzer startup.
+	probeURL := cctx.TargetURL + req.URL.Path
 	probe, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		log.Debugf("leakage: build probe: %v", err)
