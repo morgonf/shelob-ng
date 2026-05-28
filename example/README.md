@@ -225,7 +225,8 @@ make run-3
 **Detection sequence (NameSpaceRule):**
 1. User1 request → 2xx (resource exists and is owned)
 2. Anonymous probe — strips all auth headers and cookies; if 2xx → public endpoint → skip
-3. User2 probe — if 2xx → **BOLA HIGH** (cross-account access confirmed)
+3. User2 probe — cookies from `-user2`/`-pass2` login + shared `X-Api-Key` if set;
+   Bearer token is **not** forwarded (it would authenticate as user1); if 2xx → **BOLA HIGH**
 
 **Expected findings:** User2 can read basket items and orders belonging to User1.
 
@@ -598,7 +599,7 @@ curl -s -o /dev/null -w "whoami: HTTP %{http_code}\n" \
 
 | Flag | Value | Purpose |
 |------|-------|---------|
-| `-token` | `eyJ…` | Sets `Authorization: Bearer <value>` on every request and checker probe |
+| `-token` | `eyJ…` | Sets `Authorization: Bearer <value>` on every request and checker probe, except the `NameSpaceRule` user2 probe (which must not carry user1's identity) |
 
 **When to use `-token` instead of `-user`/`-password`:**
 - The target uses stateless JWT-only auth (no `Set-Cookie` response header)
@@ -639,6 +640,9 @@ make run-10
   -output   results/10_leakage_verify
 
 # Step 2: analyse findings
+# The checker now skips 401 responses and collection endpoints (no path params)
+# at the checker level, so any findings that reach the output are candidates
+# for genuine leakage. Only 401-triggered findings would be false positives.
 python3 - results/10_leakage_verify << 'EOF'
 import json, os, sys, glob, re
 
@@ -646,7 +650,7 @@ out_dir = sys.argv[1]
 files   = sorted(glob.glob(os.path.join(out_dir, 'findings', '*.json')))
 
 if not files:
-    print("No LeakageRule findings — PASS (zero false positives)")
+    print("No LeakageRule findings — PASS")
     sys.exit(0)
 
 false_positives = []
@@ -656,17 +660,19 @@ for path in files:
         d = json.load(f)
     m = re.search(r'returned (\d+) \(rejected\)', d.get('detail',''))
     code = int(m.group(1)) if m else 0
-    (false_positives if code in (401,403) else real_findings).append((code, d['url']))
+    # Only 401 is a false positive: auth rejected before logic ran.
+    # 403 on singleton endpoints is a valid trigger (post-write ownership check).
+    (false_positives if code == 401 else real_findings).append((code, d['url']))
 
 if false_positives:
-    print(f"FAIL: {len(false_positives)} false positive(s) from 401/403 triggers:")
+    print(f"FAIL: {len(false_positives)} false positive(s) from 401 triggers:")
     for code, url in false_positives:
         print(f"  [{code}] {url}")
 else:
-    print("PASS: zero findings triggered by 401/403 (auth rejections correctly excluded)")
+    print("PASS: no false positives (401 auth rejections are correctly excluded)")
 
 if real_findings:
-    print(f"\nGenuine findings ({len(real_findings)}) — POST 400/422 with committed state:")
+    print(f"\nFindings ({len(real_findings)}) — singleton endpoints with committed state:")
     for code, url in real_findings:
         print(f"  [{code}] {url}")
 EOF

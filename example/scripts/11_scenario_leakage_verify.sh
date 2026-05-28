@@ -98,21 +98,25 @@ for path in files:
     m = re.search(r'returned (\d+) \(rejected\)', detail)
     trigger_code = int(m.group(1)) if m else 0
 
-    if trigger_code in (401, 403):
+    # Only 401 is a false positive: auth rejected before logic ran.
+    # 403 on singleton endpoints (with path params) is now a valid trigger
+    # (post-write ownership check); the collection endpoint heuristic in the
+    # checker already skips collection-level 403 responses before probing.
+    if trigger_code == 401:
         false_positives.append({'file': os.path.basename(path), 'code': trigger_code, 'detail': detail})
     else:
         real_findings.append({'file': os.path.basename(path), 'code': trigger_code, 'detail': detail})
 
 if false_positives:
-    print(f"  FAIL: {len(false_positives)} false positive(s) found (401/403 trigger):")
+    print(f"  FAIL: {len(false_positives)} false positive(s) found (401 trigger):")
     for fp in false_positives:
         print(f"    [{fp['code']}] {fp['file']}")
         print(f"           {fp['detail'][:80]}")
     print()
-    print("  The LeakageRule 401/403 fix is NOT applied in this build.")
+    print("  The LeakageRule 401 fix is NOT applied in this build.")
 else:
-    print("  PASS: zero findings triggered by 401/403 responses.")
-    print("        Auth rejections correctly excluded from LeakageRule.")
+    print("  PASS: zero findings triggered by 401 (auth rejections correctly excluded).")
+    print("        403 findings on singleton endpoints are genuine candidates.")
 
 print()
 

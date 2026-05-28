@@ -159,7 +159,7 @@ shelob-ng/
 │   ├── go/                   runtime/coverage CSP adapter
 │   ├── python/               coverage.py CSP adapter
 │   └── c/                    gcov CSP adapter
-└── example/                  Juice Shop walkthrough (8 scenarios, Makefile)
+└── example/                  Juice Shop walkthrough (10 scenarios, Makefile)
 ```
 
 ---
@@ -271,8 +271,12 @@ also gets 2xx, the resource is accessible cross-account → **HIGH** finding.
 
 Three-step probe sequence:
 1. User1 request → 2xx (resource exists and is owned)
-2. Anonymous probe (no cookies) → if 2xx, endpoint is public → skip
-3. User2 probe → if 2xx → **BOLA HIGH**
+2. Anonymous probe (no cookies, no token, no API key) → if 2xx, endpoint is public → skip
+3. User2 probe (user2 cookies + shared `X-Api-Key` if set; Bearer token is **not**
+   forwarded as it encodes user1's identity) → if 2xx → **BOLA HIGH**
+
+> **Note:** NameSpaceRule requires user2 to authenticate via cookies (`-user2 / -pass2`).
+> Targets that use only Bearer tokens for identity (no cookies) are not supported by this checker.
 
 ---
 
@@ -397,10 +401,15 @@ including all checker probe requests.
     -duration 2h -output ./results
 ```
 
-Note: `-user`/`-password` (cookie login) and `-apikey`/`-token` can be combined —
-the fuzzer will both attempt cookie login and set the static header.
-The anonymous probe inside `NameSpaceRule` strips all auth headers and cookies
-to ensure it is genuinely unauthenticated.
+Notes:
+- `-user`/`-password` (cookie login) and `-apikey`/`-token` can be combined —
+  the fuzzer will both attempt cookie login and set the static header.
+- The anonymous probe inside `NameSpaceRule` strips all auth headers and cookies
+  to ensure it is genuinely unauthenticated.
+- The user2 probe (`-user2 / -pass2`) carries the shared `X-Api-Key` (if set)
+  but **not** the Bearer token: the token encodes user1's identity (e.g. JWT `sub`
+  claim) and forwarding it would authenticate user2's probe as user1, defeating
+  the BOLA check. For BOLA detection, user2 must authenticate via cookies only.
 
 ---
 
@@ -785,7 +794,7 @@ The difference reveals endpoints that are unreachable or crash on every input.
 | `-user2` | | Second user for `NameSpaceRule` (BOLA) |
 | `-pass2` | | Password for second user |
 | `-apikey` | | Static API key — sets `X-Api-Key: <value>` on every request |
-| `-token` | | Static Bearer token — sets `Authorization: Bearer <value>` on every request |
+| `-token` | | Static Bearer token — sets `Authorization: Bearer <value>` on every request except the `NameSpaceRule` user2 probe (which must not carry user1's identity) |
 | `-output` | `fuzzer_output` | Output directory for findings and replays |
 | `-duration` | `1h` | Fuzzing duration (`30m`, `2h`, `24h`, …) |
 | `-rps` | `0` | Requests per second cap (0 = unlimited) |
