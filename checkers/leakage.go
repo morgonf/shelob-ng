@@ -54,12 +54,13 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 		return nil
 	}
 
-	// Build the probe URL from the target base URL and the request path.
-	// Avoid reconstructing from req.URL.Scheme/Host: those fields may be empty
-	// when the request was built from a relative URL (e.g. when -url is omitted
-	// and spec server URLs are relative), producing a malformed "://host/path".
-	// cctx.TargetURL is always an absolute URL validated at fuzzer startup.
-	probeURL := cctx.TargetURL + req.URL.Path
+	// Build the probe URL from the fully-parsed request URL (scheme + host + path).
+	// Using cctx.TargetURL + req.URL.Path would double any path prefix already
+	// present in the spec server URL (e.g. servers[0].url = "http://api.example.com/v1"
+	// → req.URL.Path = "/v1/users/5" → probeURL = "…/v1/v1/users/5").
+	// req.URL is always an absolute URL because FromCorpusEntry builds it from
+	// targetURL (which run.go validates as non-empty at startup).
+	probeURL := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 	probe, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		log.Debugf("leakage: build probe: %v", err)

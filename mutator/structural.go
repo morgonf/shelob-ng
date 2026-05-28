@@ -100,7 +100,16 @@ func (s *structuralMutator) mutateIntConstrained(v int64, c *FieldConstraint) in
 			if lo == hi {
 				return lo
 			}
-			return lo + s.rng.Int63n(hi-lo+1)
+			span := hi - lo
+			if span < 0 {
+				// int64 overflow: bounds span the full int64 range; return lo.
+				return lo
+			}
+			if span == math.MaxInt64 {
+				// span+1 would overflow to MinInt64; sample within [lo, lo+MaxInt64).
+				return lo + s.rng.Int63n(math.MaxInt64)
+			}
+			return lo + s.rng.Int63n(span+1)
 		}
 		if c.Minimum != nil {
 			return int64(*c.Minimum) + s.rng.Int63n(10)
@@ -197,7 +206,8 @@ func (s *structuralMutator) mutateStringConstrained(v string, c *FieldConstraint
 			return strings.Repeat("A", int(minLen)+s.rng.Intn(5))
 		}
 		span := maxLen - minLen
-		if span <= 0 {
+		if span <= 0 || span >= math.MaxInt64 {
+			// span <= 0: degenerate range; span >= MaxInt64: span+1 overflows int64.
 			return strings.Repeat("A", int(minLen))
 		}
 		targetLen := minLen + s.rng.Int63n(span+1)

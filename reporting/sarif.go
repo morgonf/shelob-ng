@@ -350,7 +350,7 @@ func buildReport(findings []Entry, projectName string) sarifReport {
 			Results:   results,
 		}},
 		Properties: sarifTopProp{
-			ArtifactsCount: 0,
+			ArtifactsCount: len(artifacts),
 			ProjectName:    projectName,
 			SnapshotName:   time.Now().UTC().Format(time.RFC3339),
 			WarningsCount:  len(findings),

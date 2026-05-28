@@ -29,6 +29,11 @@ func GenerateRandomDataModels(schema *openapi3.Schema) interface{} {
 			// Pick a random enum value, not always the first.
 			return schema.Enum[gofakeit.IntRange(0, len(schema.Enum)-1)]
 		}
+		if schema.Default != nil {
+			if s, ok := schema.Default.(string); ok {
+				return s
+			}
+		}
 		if schema.Example != nil {
 			return schema.Example
 		}
