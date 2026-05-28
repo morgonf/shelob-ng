@@ -35,29 +35,58 @@ echo "  Duration: ${DURATION_QUICK}"
 echo "  Output:   ${OUT}/"
 echo ""
 
+# Helper: extract JWT from a login response body.
+_extract_jwt() {
+    python3 -c "
+import json, sys
+try:
+    body = json.load(sys.stdin)
+    print((body.get('authentication') or {}).get('token')
+          or body.get('token')
+          or body.get('access_token')
+          or '')
+except Exception:
+    print('')
+" 2>/dev/null || true
+}
+
 # Step 1: obtain a JWT from Juice Shop login endpoint.
-# The token lives in response body field: .authentication.token
+# If login fails (account not yet created / container restarted and wiped
+# the in-memory SQLite DB), register the account and retry once.
 echo "Step 1: Obtaining JWT from ${JUICE_URL}/rest/user/login ..."
 LOGIN_RESP=$(curl -s -X POST "${JUICE_URL}/rest/user/login" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"${FUZZER_USER}\",\"password\":\"${FUZZER_PASS}\"}")
-
-JWT=$(echo "${LOGIN_RESP}" | python3 -c "
-import json, sys
-body = json.load(sys.stdin)
-token = (body.get('authentication') or {}).get('token') \
-     or body.get('token') \
-     or body.get('access_token') \
-     or ''
-print(token)
-" 2>/dev/null || true)
+JWT=$(echo "${LOGIN_RESP}" | _extract_jwt)
 
 if [ -z "${JWT}" ]; then
-    echo "ERROR: could not extract JWT from login response."
-    echo "Response was: ${LOGIN_RESP}"
+    echo "  Login failed — account may not exist (Juice Shop restarted?)."
+    echo "  Attempting to register ${FUZZER_USER} ..."
+    REG_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+        -X POST "${JUICE_URL}/api/Users" \
+        -H 'Content-Type: application/json' \
+        -d "{
+            \"email\": \"${FUZZER_USER}\",
+            \"password\": \"${FUZZER_PASS}\",
+            \"passwordRepeat\": \"${FUZZER_PASS}\",
+            \"securityQuestion\": {\"id\": 1, \"question\": \"Your eldest siblings middle name?\"},
+            \"securityAnswer\": \"shelob\"
+        }")
+    if [ "${REG_STATUS}" = "201" ] || [ "${REG_STATUS}" = "200" ] || [ "${REG_STATUS}" = "422" ]; then
+        echo "  Registration: HTTP ${REG_STATUS} — retrying login ..."
+        LOGIN_RESP=$(curl -s -X POST "${JUICE_URL}/rest/user/login" \
+            -H 'Content-Type: application/json' \
+            -d "{\"email\":\"${FUZZER_USER}\",\"password\":\"${FUZZER_PASS}\"}")
+        JWT=$(echo "${LOGIN_RESP}" | _extract_jwt)
+    fi
+fi
+
+if [ -z "${JWT}" ]; then
     echo ""
-    echo "Skipping scenario 9 — Juice Shop may not be running or credentials may be wrong."
-    echo "Run 'make setup' first."
+    echo "ERROR: could not obtain JWT. Check that Juice Shop is running:"
+    echo "  curl ${JUICE_URL}/rest/admin/application-version"
+    echo ""
+    echo "If Juice Shop is not running, start it with: make start"
     exit 1
 fi
 
