@@ -39,6 +39,7 @@ import (
 	"shelob-ng/mutator"
 	"shelob-ng/mutator/payloads"
 	"shelob-ng/openapi"
+	"shelob-ng/reporting"
 	"shelob-ng/request"
 	"shelob-ng/sequence"
 	"shelob-ng/ui"
@@ -365,6 +366,20 @@ func Run() {
 		log.Warnf("api-coverage: save %s: %v", covPath, err)
 	} else {
 		fmt.Printf("API coverage report: %s\n", covPath)
+	}
+
+	// Write SARIF report if requested.
+	if cfg.SarifOut != "" {
+		findingsDir := filepath.Join(cfg.OutputDir, "findings")
+		projectName := strings.TrimSuffix(filepath.Base(cfg.Spec), filepath.Ext(cfg.Spec))
+		entries, err := reporting.ReadFindingsDir(findingsDir)
+		if err != nil {
+			log.Warnf("sarif: read findings: %v", err)
+		} else if err := reporting.WriteSARIF(cfg.SarifOut, entries, projectName); err != nil {
+			log.Warnf("sarif: write %s: %v", cfg.SarifOut, err)
+		} else {
+			fmt.Printf("SARIF report: %s (%d findings)\n", cfg.SarifOut, len(entries))
+		}
 	}
 
 	// Persist corpus if a directory was configured.

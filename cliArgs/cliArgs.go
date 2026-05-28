@@ -49,6 +49,10 @@ type Config struct {
 	User2 string
 	Pass2 string
 
+	// SarifOut is the path for the SARIF 2.1.0 output file.
+	// Empty string disables SARIF output.
+	SarifOut string
+
 	// NoColor disables ANSI escape codes in the status display.
 	// Set automatically when NO_COLOR env var is set or TERM=dumb.
 	NoColor bool
@@ -78,6 +82,7 @@ func ParseCliArgs() Config {
 	checker := flag.String("checker", "", "comma-separated checkers to enable (empty = all); valid names: BehavioralPatterns,UseAfterFree,InvalidDynamicObject,LeakageRule,NameSpaceRule,SchemaViolation")
 	user2 := flag.String("user2", "", "second user for BOLA/NameSpaceRule checker")
 	pass2 := flag.String("pass2", "", "second user password for BOLA/NameSpaceRule checker")
+	sarifOut := flag.String("sarif", "", "write SARIF 2.1.0 report to this path (e.g. results.sarif)")
 
 	flag.Parse()
 
@@ -119,9 +124,10 @@ func ParseCliArgs() Config {
 		CorpusDir:  *corpusDir,
 		Payloads:   *payloads,
 		Checker:    *checker,
-		User2:   *user2,
-		Pass2:   *pass2,
-		NoColor: *noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb",
+		User2:    *user2,
+		Pass2:    *pass2,
+		SarifOut: *sarifOut,
+		NoColor:  *noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb",
 	}
 }
 
