@@ -96,6 +96,7 @@ func All() []Checker {
 		InvalidDynamicObject{},
 		LeakageRule{},
 		NameSpaceRule{},
+		BrokenFunctionLevelAuthorization{},
 		SchemaViolation{},
 	}
 }
