@@ -29,6 +29,7 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 9. [Producer-consumer dependency graph](#producer-consumer-dependency-graph)
 10. [Status display](#status-display)
 11. [Output format](#output-format) (findings JSON, SARIF, api-coverage)
+    - [SARIF report](#sarif-report--sarif-path)
 12. [All flags](#all-flags)
 13. [Coverage Sidecar Protocol (CSP)](#coverage-sidecar-protocol)
 14. [Example: OWASP Juice Shop](#example-owasp-juice-shop)
@@ -44,9 +45,10 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 | **Three mutators** | Structural (type-aware, grammar-constrained), byte-level (bit/byte flips), security payloads (external wordlists) |
 | **Grammar-constrained mutation** | Structural mutator reads `minimum`, `maximum`, `minLength`, `maxLength`, `enum` from the spec — 70% of mutations stay within valid bounds to reach business logic; 30% test boundary violations |
 | **Producer-consumer graph** | Links `POST /X` (producer) to `GET|PUT|DELETE /X/{id}` (consumer); pre-executes the producer to inject a real resource ID before the consumer request; learns at runtime when the spec lacks response schemas |
-| **Seven checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, BFLA, SchemaViolation |
+| **Eight checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, BFLA, AuthBypassRule, SchemaViolation |
 | **BOLA / IDOR detection** | NameSpaceRule replays every 2xx request with a second-user session; cross-account access = finding |
 | **BFLA detection** | BrokenFunctionLevelAuthorization probes admin/privileged endpoints with a lower-privilege user; role-boundary bypass = finding |
+| **Auth bypass detection** | AuthBypassRule fires when an anonymous probe returns 2xx on an operation the OpenAPI spec marks as requiring authentication |
 | **SARIF 2.1.0 output** | `-sarif <path>` writes a Svacer-compatible SARIF report at run end; importable into GitHub Security, AzureDevOps, Svacer |
 | **Stateful CRUD sequences** | Auto-derived from spec: create → read → delete → probe; detects server-side UseAfterFree |
 | **CSP coverage feedback** | Language-agnostic HTTP sidecar protocol; adapters for Node.js, Go, Python, C |
@@ -95,6 +97,7 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 │                │  │  LeakageRule         — POST 4xx → GET probe  │   │ │
 │                │  │  NameSpaceRule       — user2 BOLA probe      │   │ │
 │                │  │  BFLA                — role-boundary probe   │   │ │
+│                │  │  AuthBypassRule      — anon probe vs spec    │   │ │
 │                │  │  SchemaViolation     — OAS response validate │   │ │
 │                │  │                                              │   │ │
 │                │  │  finding → DedupeKey → logFinding (JSON+POC) │   │ │
@@ -157,6 +160,7 @@ shelob-ng/
 │   ├── leakage.go            POST 4xx → GET 2xx detection
 │   ├── namespace.go          BOLA/IDOR: user2 replay
 │   ├── bfla.go               BFLA: role-boundary user2 probe on privileged endpoints
+│   ├── authbypass.go         AuthBypassRule: anon probe vs spec security declarations
 │   └── schema.go             OpenAPI response validation (real body)
 ├── sequence/
 │   ├── builder.go            derive CRUD sequences + dependency graph; LearnProducer (runtime)
@@ -274,13 +278,17 @@ How authentication works:
 
 ### Scenario C — BOLA / BFLA detection
 
-Both `NameSpaceRule` (BOLA/IDOR) and `BFLA` checkers activate when `-user2 / -pass2`
-are set. They share the same probe infrastructure but test different security properties:
+`NameSpaceRule`, `BFLA`, and `AuthBypassRule` all issue authentication probes
+but test fundamentally different properties:
 
-| Checker | Tests | Example |
-|---------|-------|---------|
-| `NameSpaceRule` | **Ownership** — user2 accessing user1's specific resource | `GET /api/orders/42` (user1's order) accessible by user2 |
-| `BFLA` | **Role** — user2 (low privilege) calling an admin function | `GET /admin/users` accessible by a regular customer |
+| Checker | Tests | Anonymous 2xx means… | Example |
+|---------|-------|----------------------|---------|
+| `NameSpaceRule` | **Ownership** — user2 accessing user1's resource | endpoint is public → skip | `GET /orders/42` (user1's order) visible to user2 |
+| `BFLA` | **Role** — user2 (low privilege) calling an admin function | endpoint is public → skip | `GET /admin/users` accessible to a regular customer |
+| `AuthBypassRule` | **Missing auth** — no credentials needed on a spec-secured operation | endpoint leaks data → **FIRE** | `GET /api/Users` returns user list without any token |
+
+`AuthBypassRule` activates when at least one auth credential is configured
+(`-user/-password`, `-token`, or `-apikey`). It does not need `-user2`.
 
 Run both by providing two user accounts:
 
@@ -584,7 +592,7 @@ as-is (clone of the selected corpus entry).
 
 ## Security checkers
 
-Seven stateless checkers run after every request/response pair. Checkers that
+Eight stateless checkers run after every request/response pair. Checkers that
 issue additional HTTP probe requests do so concurrently (goroutine pool,
 semaphore 8) so they do not block the main fuzzing loop.
 
@@ -642,6 +650,16 @@ that reproduces the issue.
 │    Probe 2: user2 cookies + X-Api-Key (Bearer withheld)             │
 │    Finding: user2 also 2xx  →  HIGH (BFLA)                         │
 │                                                                     │
+│  AuthBypassRule  (requires at least one auth credential)            │
+│    Tests: can an unauthenticated request reach an endpoint that the │
+│           OpenAPI spec marks as requiring authentication?            │
+│    Distinction from NameSpaceRule/BFLA: those checkers SKIP when    │
+│    the anonymous probe returns 2xx; AuthBypassRule FIRES.           │
+│    Signal: op.security non-empty in spec (bearerAuth, apiKey, etc.) │
+│    Trigger: user1 got 2xx AND spec declares security on operation   │
+│    Probe:   anonymous (all auth stripped)                           │
+│    Finding: anonymous also 2xx  →  HIGH (missing auth enforcement)  │
+│                                                                     │
 │  SchemaViolation                                                    │
 │    Validates the actual response body against the OpenAPI schema    │
 │    (uses the real body, not an empty stub like the legacy code did) │
@@ -657,6 +675,7 @@ that reproduces the issue.
 | `LeakageRule` | 1 GET | medium |
 | `NameSpaceRule` | 1–2 (anon + user2 probe) | high |
 | `BFLA` | 1–2 (anon + user2 probe, privileged endpoints only) | high |
+| `AuthBypassRule` | 1 (anon probe on spec-secured operations) | high |
 | `SchemaViolation` | 0 | medium |
 
 ---
@@ -960,7 +979,7 @@ The difference reveals endpoints that are unreachable or crash on every input.
 | `-csp-disable` | false | Force pure-random mode even if `-csp-url` is set |
 | `-corpus-dir` | | Persist/load corpus to/from this directory |
 | `-payloads` | | Payload wordlists: `key=path,key2=path2` |
-| `-checker` | all | Comma-separated checker names to enable; empty = all. Valid names: `BehavioralPatterns`, `UseAfterFree`, `InvalidDynamicObject`, `LeakageRule`, `NameSpaceRule`, `BFLA`, `SchemaViolation` |
+| `-checker` | all | Comma-separated checker names to enable; empty = all. Valid names: `BehavioralPatterns`, `UseAfterFree`, `InvalidDynamicObject`, `LeakageRule`, `NameSpaceRule`, `BFLA`, `AuthBypassRule`, `SchemaViolation` |
 | `-sarif` | | Write a Svacer-compatible SARIF 2.1.0 report to this path at end of run (e.g. `results.sarif`) |
 
 ---
@@ -1228,6 +1247,7 @@ func All() []Checker {
         LeakageRule{},
         NameSpaceRule{},
         BrokenFunctionLevelAuthorization{},
+        AuthBypassRule{},
         SchemaViolation{},
         MyChecker{},  // add here
     }
