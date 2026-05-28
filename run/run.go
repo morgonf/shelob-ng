@@ -99,10 +99,15 @@ func Run() {
 	// Dynamic value pool: accumulates IDs/tokens from responses for path-param reuse.
 	pool := corpus.NewDynamicValuePool()
 
+	// Schema constraint index: built from the spec so the structural mutator can
+	// generate schema-aware boundary values (valid 70%, one-outside 30%).
+	schemaIdx := mutator.BuildSchemaIndex(spec)
+
 	// Mutator: weighted combination of structural / byte-level / security strategies.
 	pls := loadPayloads(cfg.Payloads)
 	mut := mutator.NewMutator(mutator.Config{
 		Payloads: pls,
+		Schema:   schemaIdx,
 	})
 
 	// Coverage client: CSP or no-op when disabled.

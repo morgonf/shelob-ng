@@ -32,6 +32,12 @@ type Config struct {
 	// Payloads for the security strategy.
 	// Nil or empty set causes security strategy to return StrategyNotApplicable.
 	Payloads *payloads.Set
+
+	// Schema is the pre-built constraint index derived from the OpenAPI spec.
+	// When non-nil, the structural strategy uses schema bounds to generate
+	// valid boundary values instead of unconstrained edge cases.
+	// Nil disables constraint-aware mutation (original behaviour).
+	Schema *SchemaIndex
 }
 
 // Default strategy weights.
@@ -76,7 +82,7 @@ func NewMutator(cfg Config) Mutator {
 
 	items := []weightedStrategy{
 		{strategy: &byteLevelMutator{rng: rng}, weight: byteW},
-		{strategy: &structuralMutator{rng: rng}, weight: structW},
+		{strategy: &structuralMutator{rng: rng, schema: cfg.Schema}, weight: structW},
 		{strategy: &securityMutator{rng: rng, payloads: cfg.Payloads}, weight: secW},
 	}
 

@@ -11,17 +11,15 @@ import (
 
 // structuralMutator changes field values while preserving their approximate type.
 // It picks one field per Apply call (Decision 1A: MutationWidth=1) and applies
-// a type-aware transformation:
+// a type-aware transformation.
 //
-//   - string → boundary lengths, null byte, type-confusion values
-//   - int64  → zero, ±1, MaxInt64, MinInt64, common boundary values
-//   - float64 → zero, ±1, MaxFloat32
-//   - bool   → flip
-//   - body   → add poison field / remove a field / change a leaf type
-//
-// Returns StrategyNotApplicable when the entry has no mutable fields.
+// When a SchemaIndex is available, constrained fields are mutated to respect
+// OpenAPI schema bounds: 70% of mutations land inside the valid range (to
+// exercise correct code paths) and 30% land just outside (to exercise error
+// handling). Unconstrained fields use the original edge-case strategy.
 type structuralMutator struct {
-	rng *rand.Rand
+	rng    *rand.Rand
+	schema *SchemaIndex // nil when no spec is available
 }
 
 func (s *structuralMutator) Name() string { return "structural" }
@@ -34,17 +32,19 @@ func (s *structuralMutator) Apply(entry *corpus.CorpusEntry) (*corpus.CorpusEntr
 
 	switch target.Kind {
 	case FieldPath:
-		entry.PathParams[target.Key] = s.mutateValue(entry.PathParams[target.Key])
+		c := s.lookupConstraint(entry, "path", target.Key)
+		entry.PathParams[target.Key] = s.mutateConstrained(entry.PathParams[target.Key], c)
 	case FieldQuery:
-		// QueryParams is map[string]string; convert mutated value via Sprintf.
-		entry.QueryParams[target.Key] = fmt.Sprintf("%v", s.mutateValue(entry.QueryParams[target.Key]))
+		c := s.lookupConstraint(entry, "query", target.Key)
+		entry.QueryParams[target.Key] = fmt.Sprintf("%v", s.mutateConstrained(entry.QueryParams[target.Key], c))
 	case FieldHeader:
-		entry.HeaderParams[target.Key] = fmt.Sprintf("%v", s.mutateValue(entry.HeaderParams[target.Key]))
+		c := s.lookupConstraint(entry, "header", target.Key)
+		entry.HeaderParams[target.Key] = fmt.Sprintf("%v", s.mutateConstrained(entry.HeaderParams[target.Key], c))
 	case FieldCookie:
-		entry.CookieParams[target.Key] = fmt.Sprintf("%v", s.mutateValue(entry.CookieParams[target.Key]))
+		c := s.lookupConstraint(entry, "cookie", target.Key)
+		entry.CookieParams[target.Key] = fmt.Sprintf("%v", s.mutateConstrained(entry.CookieParams[target.Key], c))
 	case FieldBody:
 		if err := s.mutateBody(entry); err != nil {
-			// body not JSON — byte_level strategy handles raw bytes
 			return nil, StrategyNotApplicable
 		}
 	}
@@ -52,7 +52,185 @@ func (s *structuralMutator) Apply(entry *corpus.CorpusEntry) (*corpus.CorpusEntr
 	return entry, nil
 }
 
-// mutateValue dispatches to the type-specific mutation for each scalar type.
+// lookupConstraint returns the FieldConstraint for the given field, or nil when
+// no schema index is available or no constraint is declared.
+func (s *structuralMutator) lookupConstraint(entry *corpus.CorpusEntry, location, name string) *FieldConstraint {
+	if s.schema == nil {
+		return nil
+	}
+	return s.schema.Get(entry.Method, entry.PathPattern, location, name)
+}
+
+// mutateConstrained dispatches to a constraint-aware mutation when c is non-nil,
+// falling back to the unconstrained mutateValue otherwise.
+func (s *structuralMutator) mutateConstrained(v interface{}, c *FieldConstraint) interface{} {
+	if c == nil {
+		return s.mutateValue(v)
+	}
+	if len(c.Enum) > 0 {
+		return s.mutateEnum(v, c.Enum)
+	}
+	switch val := v.(type) {
+	case int64:
+		return s.mutateIntConstrained(val, c)
+	case float64:
+		return s.mutateFloatConstrained(val, c)
+	case string:
+		return s.mutateStringConstrained(val, c)
+	default:
+		return s.mutateValue(v)
+	}
+}
+
+// mutateIntConstrained applies schema bounds to integer mutation.
+// 70% of results land inside [minimum, maximum]; 30% land just outside to test
+// error handling. Unconstrained dimensions fall back to the normal strategy.
+func (s *structuralMutator) mutateIntConstrained(v int64, c *FieldConstraint) int64 {
+	if !c.HasNumericBounds() {
+		return s.mutateInt(v)
+	}
+
+	if s.rng.Float64() < 0.70 {
+		// Valid: stay within [min, max].
+		if c.Minimum != nil && c.Maximum != nil {
+			lo, hi := int64(*c.Minimum), int64(*c.Maximum)
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			if lo == hi {
+				return lo
+			}
+			return lo + s.rng.Int63n(hi-lo+1)
+		}
+		if c.Minimum != nil {
+			return int64(*c.Minimum) + s.rng.Int63n(10)
+		}
+		hi := int64(*c.Maximum)
+		return hi - s.rng.Int63n(10)
+	}
+
+	// Boundary violation: one step outside the valid range.
+	switch s.rng.Intn(4) {
+	case 0:
+		if c.Minimum != nil {
+			return int64(*c.Minimum) - 1
+		}
+		return math.MinInt64
+	case 1:
+		if c.Maximum != nil {
+			return int64(*c.Maximum) + 1
+		}
+		return math.MaxInt64
+	case 2:
+		if c.Minimum != nil {
+			return int64(*c.Minimum) // exactly at lower bound
+		}
+		return v
+	default:
+		if c.Maximum != nil {
+			return int64(*c.Maximum) // exactly at upper bound
+		}
+		return v
+	}
+}
+
+// mutateFloatConstrained mirrors mutateIntConstrained for float64 fields.
+func (s *structuralMutator) mutateFloatConstrained(v float64, c *FieldConstraint) float64 {
+	if !c.HasNumericBounds() {
+		return s.mutateFloat(v)
+	}
+
+	if s.rng.Float64() < 0.70 {
+		if c.Minimum != nil && c.Maximum != nil {
+			lo, hi := *c.Minimum, *c.Maximum
+			if lo > hi {
+				lo, hi = hi, lo
+			}
+			return lo + s.rng.Float64()*(hi-lo)
+		}
+		if c.Minimum != nil {
+			return *c.Minimum + s.rng.Float64()*10
+		}
+		return *c.Maximum - s.rng.Float64()*10
+	}
+
+	switch s.rng.Intn(3) {
+	case 0:
+		if c.Minimum != nil {
+			return *c.Minimum - 0.001
+		}
+		return -math.MaxFloat32
+	case 1:
+		if c.Maximum != nil {
+			return *c.Maximum + 0.001
+		}
+		return math.MaxFloat32
+	default:
+		if c.Minimum != nil {
+			return *c.Minimum
+		}
+		return *c.Maximum
+	}
+}
+
+// mutateStringConstrained applies schema length bounds to string mutation.
+// 70% of results satisfy minLength ≤ len ≤ maxLength; 30% are at or over
+// the maxLength boundary to test truncation / rejection logic.
+func (s *structuralMutator) mutateStringConstrained(v string, c *FieldConstraint) string {
+	if !c.HasStringBounds() {
+		return s.mutateString(v)
+	}
+
+	maxLen := int64(-1)
+	if c.MaxLength != nil {
+		maxLen = int64(*c.MaxLength)
+	}
+	minLen := int64(0)
+	if c.MinLength != nil {
+		minLen = int64(*c.MinLength)
+	}
+
+	if s.rng.Float64() < 0.70 {
+		// Valid: length within [minLen, maxLen].
+		if maxLen < 0 {
+			// Only minLen declared — generate something just above the minimum.
+			return strings.Repeat("A", int(minLen)+s.rng.Intn(5))
+		}
+		span := maxLen - minLen
+		if span <= 0 {
+			return strings.Repeat("A", int(minLen))
+		}
+		targetLen := minLen + s.rng.Int63n(span+1)
+		return strings.Repeat("A", int(targetLen))
+	}
+
+	// Boundary violation: at, one over, or far over maxLen.
+	if maxLen >= 0 {
+		switch s.rng.Intn(3) {
+		case 0:
+			return strings.Repeat("A", int(maxLen)) // exactly at limit
+		case 1:
+			return strings.Repeat("A", int(maxLen)+1) // one over
+		default:
+			return strings.Repeat("A", 256) // classic overflow
+		}
+	}
+	return s.mutateString(v)
+}
+
+// mutateEnum picks from the declared enum values 70% of the time; the remaining
+// 30% falls through to an unconstrained mutation to test rejection behaviour.
+func (s *structuralMutator) mutateEnum(v interface{}, enum []interface{}) interface{} {
+	if len(enum) == 0 {
+		return s.mutateValue(v)
+	}
+	if s.rng.Float64() < 0.70 {
+		return enum[s.rng.Intn(len(enum))]
+	}
+	return s.mutateValue(v)
+}
+
+// mutateValue dispatches to the type-specific unconstrained mutation.
 func (s *structuralMutator) mutateValue(v interface{}) interface{} {
 	switch val := v.(type) {
 	case string:
@@ -64,7 +242,6 @@ func (s *structuralMutator) mutateValue(v interface{}) interface{} {
 	case bool:
 		return !val
 	default:
-		// Unknown or nil — send empty string to trigger schema validation errors.
 		return ""
 	}
 }
@@ -88,22 +265,18 @@ var stringEdgeCases = []string{
 func (s *structuralMutator) mutateString(v string) string {
 	switch s.rng.Intn(4) {
 	case 0, 1:
-		// 50%: substitute a known edge-case value.
 		return stringEdgeCases[s.rng.Intn(len(stringEdgeCases))]
 	case 2:
-		// 25%: truncate to a random prefix (exercises short-read parsers).
 		if len(v) == 0 {
 			return ""
 		}
 		return v[:s.rng.Intn(len(v)+1)]
 	default:
-		// 25%: duplicate the string (exercises length-overflow parsers).
 		return v + v
 	}
 }
 
-// intEdgeCases are integer values that commonly trigger boundary bugs:
-// signed/unsigned overflow, common parser boundaries, and near-zero values.
+// intEdgeCases are integer values that commonly trigger boundary bugs.
 var intEdgeCases = []int64{
 	0, 1, -1,
 	math.MaxInt64, math.MinInt64,
@@ -112,7 +285,6 @@ var intEdgeCases = []int64{
 }
 
 func (s *structuralMutator) mutateInt(v int64) int64 {
-	// 50%: use a boundary constant; 50%: nudge current value by ±1 or 0.
 	if s.rng.Intn(2) == 0 {
 		return intEdgeCases[s.rng.Intn(len(intEdgeCases))]
 	}
@@ -143,10 +315,9 @@ func (s *structuralMutator) mutateBody(entry *corpus.CorpusEntry) error {
 	case 1:
 		applied = s.bodyRemoveField(obj)
 	case 2:
-		applied = s.bodyMutateLeaf(obj)
+		applied = s.bodyMutateLeaf(obj, entry.Method, entry.PathPattern)
 	}
 	if !applied {
-		// Primary op couldn't act (empty object) — always succeed by adding a field.
 		s.bodyAddField(obj)
 	}
 
@@ -158,8 +329,6 @@ func (s *structuralMutator) mutateBody(entry *corpus.CorpusEntry) error {
 	return nil
 }
 
-// poisonFields are unexpected keys injected to test field rejection,
-// prototype pollution, NoSQL injection, and authorization bypass.
 var poisonFields = []struct {
 	key string
 	val interface{}
@@ -174,15 +343,12 @@ var poisonFields = []struct {
 	{"null_field", nil},
 }
 
-// bodyAddField injects a poison key that the server should reject.
-// Always returns true — adding a key to a map cannot fail.
 func (s *structuralMutator) bodyAddField(obj map[string]interface{}) bool {
 	f := poisonFields[s.rng.Intn(len(poisonFields))]
 	AddField(obj, f.key, f.val)
 	return true
 }
 
-// bodyRemoveField removes a random top-level key to trigger missing-field errors.
 func (s *structuralMutator) bodyRemoveField(obj map[string]interface{}) bool {
 	if len(obj) == 0 {
 		return false
@@ -195,8 +361,8 @@ func (s *structuralMutator) bodyRemoveField(obj map[string]interface{}) bool {
 	return true
 }
 
-// bodyMutateLeaf replaces a random top-level value with its type-aware mutation.
-func (s *structuralMutator) bodyMutateLeaf(obj map[string]interface{}) bool {
+// bodyMutateLeaf replaces one leaf value with its constrained or unconstrained mutation.
+func (s *structuralMutator) bodyMutateLeaf(obj map[string]interface{}, method, pathPattern string) bool {
 	if len(obj) == 0 {
 		return false
 	}
@@ -205,6 +371,11 @@ func (s *structuralMutator) bodyMutateLeaf(obj map[string]interface{}) bool {
 		keys = append(keys, k)
 	}
 	key := keys[s.rng.Intn(len(keys))]
-	obj[key] = s.mutateValue(obj[key])
+
+	var c *FieldConstraint
+	if s.schema != nil {
+		c = s.schema.Get(method, pathPattern, "body", key)
+	}
+	obj[key] = s.mutateConstrained(obj[key], c)
 	return true
 }
