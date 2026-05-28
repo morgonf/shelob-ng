@@ -613,8 +613,11 @@ pre-created resources.
 
 ## Scenario 10 — LeakageRule false-positive verification
 
-Verifies the 401/403 fix: `LeakageRule` must not fire when a POST is rejected
-by the auth layer (no application logic ran, no state could be committed).
+Verifies that `LeakageRule` does not fire false positives. Two classes of
+POST responses are now silently skipped:
+- **401** — auth middleware rejected the request before any logic ran
+- **Collection endpoints** (no path parameters in the spec entry) — `POST /collection`
+  followed by `GET /collection → 200` is expected REST behaviour, not a leak
 
 ### Run with make
 
@@ -675,12 +678,14 @@ EOF
 |------|-------|---------|
 | `-checker` | `LeakageRule` | Run only this checker; isolates its findings |
 
-**What was fixed:**
+**What is skipped and why:**
 
-| Behaviour | Status code trigger | Is a bug? | Action |
-|-----------|-------------------|-----------|--------|
-| `POST /api/Feedbacks → 401, GET /api/Feedbacks → 200` | 401 | No — auth layer rejected before any logic ran | Skipped (fixed) |
-| `POST /api/Something → 400, GET /api/Something → 200` | 400 | Yes — logic ran, validation failed, state committed | Finding (correct) |
+| Trigger | Reason skipped |
+|---------|---------------|
+| `POST /api/Feedbacks → 401` | Auth middleware rejected before any DB write — no state committed |
+| `POST /api/Feedbacks → 403` on collection (no `{id}` in path) | Collection endpoint; `GET /api/Feedbacks → 200` is a public read, not a leaked resource |
+| `POST /api/Users/{id} → 403` on singleton | NOT skipped — handler may have written then checked ownership → genuine finding |
+| `POST /api/Something → 400` or `422` on singleton | NOT skipped — validation failure after write → genuine finding |
 
 **Expected output:**
 ```
@@ -696,7 +701,7 @@ PASS: zero findings triggered by 401/403 (auth rejections correctly excluded)
 | `SchemaViolation` | ~74 | Response body missing declared fields |
 | `BehavioralPatterns` | ~55 | Node.js stack trace in 500 response |
 | `InvalidDynamicObject` | ~20 | `DELETE /api/Addresss/` → 500 (empty path param) |
-| `LeakageRule` | 0–2 | POST 400/422 validation failure with readable state |
+| `LeakageRule` | 0–2 | POST 4xx on singleton endpoint (with path params) leaves readable state |
 
 **High-severity finding (reproducible):**
 ```

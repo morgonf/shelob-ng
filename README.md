@@ -563,17 +563,21 @@ that reproduces the issue.
 │    Finding: probe returns 5xx  →  MEDIUM (no input validation)      │
 │                                                                     │
 │  LeakageRule                                                        │
-│    Trigger: POST returned 4xx — except 401/403 (auth rejection      │
-│             means the request never reached application logic        │
-│             and cannot have committed partial state)                 │
-│    Probe:   GET same URL with auth cookies                          │
+│    Trigger: POST returned 4xx — except:                             │
+│             • 401 (auth rejected before any logic ran)              │
+│             • collection endpoints (no path params in entry) —      │
+│               POST /collection → GET /collection → 200 is normal   │
+│               REST behaviour, not a partial write                   │
+│    Probe:   GET <target_base_url>/<path> (no query string)          │
 │    Finding: GET returns 2xx  →  MEDIUM (partial state committed)    │
 │                                                                     │
 │  NameSpaceRule  (requires -user2 / -pass2)                          │
 │    Trigger: any request returned 2xx for user1                      │
 │    Probe 1: anonymous probe — strips all auth (cookies, token,       │
 │             API key); if 2xx, endpoint is public → skip             │
-│    Probe 2: replay with user2 cookies only (no static auth headers) │
+│    Probe 2: user2 cookies + X-Api-Key (shared, if set)             │
+│             Bearer token is NOT forwarded — it encodes user1's      │
+│             identity (JWT sub) and would defeat the BOLA check      │
 │    Finding: user2 also 2xx  →  HIGH (BOLA / IDOR)                  │
 │                                                                     │
 │  SchemaViolation                                                    │
@@ -706,9 +710,13 @@ Disable colors: `-no-color` flag, `NO_COLOR=1` env var, or `TERM=dumb`.
   api-coverage.json                                     ← spec coverage report
 ```
 
-Filenames are derived from the dedup key (`checker + method + path_pattern`)
-and are stable across runs — re-running the fuzzer overwrites existing files
-rather than accumulating duplicates.
+Filenames are derived from the dedup key (`checker + method + path_pattern`):
+the first 80 sanitised characters for readability plus an 8-character SHA-256
+suffix that guarantees uniqueness for long paths. Filenames are stable across
+runs — re-running the fuzzer overwrites existing files rather than accumulating
+duplicates. A finding is only displayed on-screen when its JSON file is
+successfully written; failed writes release the dedup key so the finding
+can be retried on the next occurrence.
 
 ### Finding JSON
 
@@ -941,11 +949,14 @@ DONE  #8423  cov: 51204  corpus: 1831  ops: 93/95 (97%)  req/s: 27.4  findings: 
 | `SchemaViolation` | 74 | Response body missing declared fields |
 | `BehavioralPatterns` | 55 | Node.js stack traces in 500 responses |
 | `InvalidDynamicObject` | 20 | Server crash on `DELETE /api/Addresss/` |
-| `LeakageRule` | 0–2 | POST 400/422 (validation failure) leaves readable state |
+| `LeakageRule` | 0–2 | POST 4xx on singleton endpoint leaves readable state |
 
-`LeakageRule` no longer fires on 401/403 responses — those indicate the request
-never reached application logic. On a well-designed API, `LeakageRule` fires only
-when a genuinely rejected POST (400/422) creates a resource accessible via GET.
+`LeakageRule` skips: 401 (auth rejected before any logic ran), and collection
+endpoints (no path parameters — `POST /collection` followed by
+`GET /collection` returning 200 is expected REST behaviour, not a leak).
+It triggers only on singleton endpoints (e.g. `POST /api/users/{id}`) where a
+genuine commit-then-validate bug could leave a partially-written resource
+accessible at the specific resource URL.
 
 **High-severity finding:**
 
@@ -1058,7 +1069,14 @@ probe, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 for _, c := range cctx.AuthCookies {
     probe.AddCookie(c)
 }
-ApplyAuth(probe, cctx.APIKey, cctx.Token)  // sets Authorization: Bearer or X-Api-Key
+// For probes that must authenticate as the primary user:
+ApplyAuth(probe, cctx.APIKey, cctx.Token)
+
+// For BOLA probes that must authenticate as user2, apply only the shared API
+// key — never the Bearer token, which encodes user1's identity (JWT sub claim):
+if cctx.APIKey != "" {
+    probe.Header.Set("X-Api-Key", cctx.APIKey)
+}
 ```
 
 ### Adding a CSP adapter
