@@ -16,6 +16,7 @@ package run
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -299,8 +300,9 @@ func Run() {
 			seqFindings, replay := seqRunner.Run(context.Background(), seqs[idx])
 			sequence.SaveReplay(replay, cfg.OutputDir)
 			for _, f := range seqFindings {
-				logSequenceFinding(f, cfg.OutputDir)
-				display.Finding("Sequence:"+f.SequenceName, f.Severity, f.Title, f.URL)
+				if logSequenceFinding(f, cfg.OutputDir, &seenFindings) {
+					display.Finding("Sequence:"+f.SequenceName, f.Severity, f.Title, f.URL)
+				}
 			}
 		}
 	}
@@ -345,34 +347,48 @@ func doRequest(client *http.Client, req *http.Request) (*http.Response, []byte, 
 	return resp, body, nil
 }
 
-// logFinding writes a Finding as a JSON file in outputDir/findings/ if it has
-// not been seen before (dedup). Returns true when the finding was new and written.
-// The file is named by DedupeKey so identical findings overwrite each other
-// rather than accumulating. seen is a *sync.Map shared across all checker goroutines.
-func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
-	key := f.DedupeKey()
-	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
-		return false // duplicate
-	}
-
-	dir := filepath.Join(outputDir, "findings")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		log.Warnf("logFinding: mkdir %s: %v", dir, err)
-		return true // new finding, even if we can't write it
-	}
-
-	// Filename derived from dedup key (checker + method + path) — stable across runs,
-	// so re-running the fuzzer overwrites rather than duplicates the same finding.
-	safe := strings.Map(func(r rune) rune {
+// safeFileName converts an arbitrary string into a filesystem-safe name.
+// Characters outside [a-zA-Z0-9-] are replaced with '_'. The first 80 bytes
+// of the sanitized form are kept for human readability; a 8-character SHA-256
+// prefix is appended to guarantee uniqueness even when two keys share those
+// first 80 bytes.
+func safeFileName(key string) string {
+	clean := strings.Map(func(r rune) rune {
 		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' {
 			return r
 		}
 		return '_'
 	}, key)
-	if len(safe) > 120 {
-		safe = safe[:120]
+	prefix := clean
+	if len(prefix) > 80 {
+		prefix = prefix[:80]
 	}
-	path := filepath.Join(dir, safe+".json")
+	h := sha256.Sum256([]byte(key))
+	return fmt.Sprintf("%s_%x", prefix, h[:4])
+}
+
+// logFinding writes a Finding as a JSON file in outputDir/findings/ if it has
+// not been seen before (dedup). Returns true when the finding was new and written.
+//
+// The directory is created BEFORE the dedup key is recorded in seen, so that a
+// transient filesystem error does not permanently suppress the finding: on the
+// next occurrence, MkdirAll will succeed and the finding will be written.
+// seen is a *sync.Map shared across all checker goroutines.
+func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
+	// Create the directory before touching the dedup map. If MkdirAll fails,
+	// we return false without poisoning the key — the finding can be retried.
+	dir := filepath.Join(outputDir, "findings")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Warnf("logFinding: mkdir %s: %v", dir, err)
+		return false
+	}
+
+	key := f.DedupeKey()
+	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
+		return false // duplicate
+	}
+
+	path := filepath.Join(dir, safeFileName(key)+".json")
 
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
@@ -385,31 +401,34 @@ func logFinding(f checkers.Finding, outputDir string, seen *sync.Map) bool {
 	return true
 }
 
-// logSequenceFinding writes a sequence.Finding as a timestamped JSON file.
-func logSequenceFinding(f sequence.Finding, outputDir string) {
+// logSequenceFinding writes a sequence.Finding as a JSON file in outputDir/findings/
+// if it has not been seen before (dedup). Uses the same seen map as logFinding so
+// the dedup is consistent across checker and sequence findings.
+// Returns true when the finding was new and written.
+func logSequenceFinding(f sequence.Finding, outputDir string, seen *sync.Map) bool {
 	dir := filepath.Join(outputDir, "findings")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		log.Warnf("logSequenceFinding: mkdir %s: %v", dir, err)
-		return
+		return false
 	}
 
-	ts := time.Now().Format("20060102_150405_000")
-	safe := strings.Map(func(r rune) rune {
-		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
-			return r
-		}
-		return '_'
-	}, f.SequenceName)
-	path := filepath.Join(dir, "seq_"+safe+"_"+ts+".json")
+	// Dedup key: sequence name + method + URL path (no query string).
+	key := "Sequence:" + f.SequenceName + "\x00" + f.Method + "\x00" + f.URL
+	if _, loaded := seen.LoadOrStore(key, struct{}{}); loaded {
+		return false // duplicate
+	}
+
+	path := filepath.Join(dir, "seq_"+safeFileName(key)+".json")
 
 	b, err := json.MarshalIndent(f, "", "  ")
 	if err != nil {
 		log.Warnf("logSequenceFinding: marshal: %v", err)
-		return
+		return true
 	}
 	if err := os.WriteFile(path, b, 0o644); err != nil {
 		log.Warnf("logSequenceFinding: write %s: %v", path, err)
 	}
+	return true
 }
 
 // loadPayloads parses the -payloads flag value ("sqli=/tmp/sqli.txt,xss=/tmp/xss.txt")

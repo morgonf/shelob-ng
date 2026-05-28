@@ -4,18 +4,15 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"shelob-ng/request"
 )
 
-// ApplyAuth sets static authentication headers on req.
-// Called by checkers that build their own probe requests so those probes
-// carry the same credentials as the main fuzzing requests.
+// ApplyAuth sets static authentication headers on a probe request.
+// Delegates to request.ApplyAuth — the canonical implementation — so that
+// checker probes and main-loop requests always use identical auth logic.
 func ApplyAuth(req *http.Request, apiKey, token string) {
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-	if apiKey != "" {
-		req.Header.Set("X-Api-Key", apiKey)
-	}
+	request.ApplyAuth(req, apiKey, token)
 }
 
 // BuildCurlPOC generates a minimal curl command that reproduces req.

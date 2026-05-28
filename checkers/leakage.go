@@ -36,15 +36,21 @@ func (LeakageRule) Check(ctx context.Context, cctx CheckContext, entry *corpus.C
 	if resp.StatusCode < 400 || resp.StatusCode >= 500 {
 		return nil
 	}
-	// Skip auth rejections: the server never reached application logic,
-	// so no partial state could have been committed. 401/403 on collection
-	// endpoints (POST /resources → GET /resources → 200) is expected REST
-	// behaviour and is the main source of false positives.
-	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+	// Skip pure authentication failures (401): the auth middleware rejected the
+	// request before any application logic ran, so no state could have been
+	// committed to the database.
+	// Do NOT skip 403 (authorization failure): a handler may have already written
+	// a row and then checked ownership, returning 403 after the fact. That pattern
+	// is exactly what LeakageRule is meant to catch.
+	if resp.StatusCode == http.StatusUnauthorized {
 		return nil
 	}
 
-	probeURL := req.URL.String()
+	// Probe the resource at its canonical path — without any query parameters.
+	// Mutation-injected query strings (e.g. q=%00) can cause the server to reject
+	// the GET probe with 400 or 404 even when the resource exists, masking genuine
+	// partial-write leakage.
+	probeURL := req.URL.Scheme + "://" + req.URL.Host + req.URL.Path
 	probe, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		log.Debugf("leakage: build probe: %v", err)

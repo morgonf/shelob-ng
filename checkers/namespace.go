@@ -60,6 +60,12 @@ func (NameSpaceRule) Check(ctx context.Context, cctx CheckContext, entry *corpus
 		log.Debugf("namespace: build user2 probe: %v", err)
 		return nil
 	}
+	// buildNamespaceProbe strips all auth headers to ensure only the provided
+	// cookies authenticate the request. When the target also requires a static
+	// API key or Bearer token on every request, re-add it here so the user2
+	// probe is not silently rejected as unauthenticated — a false negative that
+	// would make the entire BOLA check invisible on API-key-required targets.
+	ApplyAuth(user2Probe, cctx.APIKey, cctx.Token)
 	probeResp, err := cctx.Client.Do(user2Probe)
 	if err != nil {
 		log.Debugf("namespace: user2 probe failed: %v", err)
