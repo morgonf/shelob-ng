@@ -119,7 +119,7 @@ func (BehavioralPatterns) Check(_ context.Context, _ CheckContext, entry *corpus
 			URL:        req.URL.String(),
 			StatusCode:  resp.StatusCode,
 			PathPattern: entry.PathPattern,
-			POC:         BuildCurlPOC(req, body),
+			POC:         BuildCurlPOC(req, entry.Body),
 		})
 	}
 	return findings

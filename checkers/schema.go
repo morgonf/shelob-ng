@@ -25,7 +25,7 @@ type SchemaViolation struct{}
 
 func (SchemaViolation) Name() string { return "SchemaViolation" }
 
-func (SchemaViolation) Check(ctx context.Context, cctx CheckContext, _ *corpus.CorpusEntry, req *http.Request, resp *http.Response, body []byte) []Finding {
+func (SchemaViolation) Check(ctx context.Context, cctx CheckContext, entry *corpus.CorpusEntry, req *http.Request, resp *http.Response, body []byte) []Finding {
 	if cctx.OASRouter == nil {
 		return nil
 	}
@@ -74,7 +74,7 @@ func (SchemaViolation) Check(ctx context.Context, cctx CheckContext, _ *corpus.C
 			URL:        req.URL.String(),
 			StatusCode:  resp.StatusCode,
 			PathPattern: route.Path,
-			POC:         BuildCurlPOC(req, body),
+			POC:         BuildCurlPOC(req, entry.Body),
 		}}
 	}
 	return nil
