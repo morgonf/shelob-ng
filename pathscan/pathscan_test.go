@@ -107,6 +107,40 @@ func TestScan_SkipsNonSensitive2xx(t *testing.T) {
 	}
 }
 
+// TestScan_NoFalsePositiveOnCommonWords verifies that responses containing common
+// English words that were previously matched by substring ("env", "admin",
+// "config") do NOT trigger MEDIUM findings now that sensitiveBodyRE is used.
+func TestScan_NoFalsePositiveOnCommonWords(t *testing.T) {
+	// These bodies contain the old trigger words but no genuinely sensitive patterns.
+	bodies := []string{
+		`{"environment":"production","region":"us-east-1"}`,         // "env" substring
+		`{"role":"administrator","team":"backend"}`,                 // "admin" substring
+		`{"path":"/etc/configuration","version":"1.0"}`,             // "config" substring
+		`{"message":"We reconfigured the service"}`,                 // "config" substring
+		`{"items":[{"name":"Admin Panel","id":1}]}`,                 // "admin" in value
+	}
+
+	for _, body := range bodies {
+		body := body
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(200)
+			w.Write([]byte(body))
+		}))
+
+		// Provide auth credentials so confirmAuthRequired is reached.
+		scanner := New(srv.Client(), srv.URL, nil, "api-key", "", nil)
+		findings := scanner.Scan(context.Background())
+		srv.Close()
+
+		for _, f := range findings {
+			if f.Severity == "medium" && strings.Contains(f.Checker, "PathDiscovery") {
+				t.Errorf("false positive MEDIUM for body %q: %+v", body, f)
+			}
+		}
+	}
+}
+
 // TestScan_Reports403AdminAsInfo verifies that an admin endpoint returning 403
 // produces an INFO finding.
 func TestScan_Reports403AdminAsInfo(t *testing.T) {

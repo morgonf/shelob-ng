@@ -146,28 +146,21 @@ func (s *Scanner) probe(ctx context.Context, c Candidate) *checkers.Finding {
 	return nil
 }
 
-// confirmAuthRequired re-probes with authentication. If the authenticated request
-// also succeeds, the endpoint likely returns the same data regardless of auth —
-// report a medium finding. If the unauthenticated one succeeds while we have
-// credentials, that means the endpoint is public despite possibly being sensitive.
-func (s *Scanner) confirmAuthRequired(ctx context.Context, c Candidate, url string, unauthCode int, body []byte) *checkers.Finding {
-	// Brief body sniff for common admin indicators.
-	lower := strings.ToLower(string(body))
-	isAdminLike := strings.Contains(lower, "admin") ||
-		strings.Contains(lower, "password") ||
-		strings.Contains(lower, "secret") ||
-		strings.Contains(lower, "env") ||
-		strings.Contains(lower, "config")
-
-	if !isAdminLike {
-		return nil // public endpoint returning non-sensitive data — not a finding
+// confirmAuthRequired fires a MEDIUM finding when the response body of an
+// unauthenticated 2xx request contains patterns that indicate sensitive data.
+// It reuses sensitiveBodyRE (the same anchored regexp used for the HIGH path)
+// to avoid false positives from common English substrings like "environment"
+// or "administrator" that would be caught by naive strings.Contains checks.
+func (s *Scanner) confirmAuthRequired(_ context.Context, c Candidate, url string, unauthCode int, body []byte) *checkers.Finding {
+	if !sensitiveBodyRE.Match(body) {
+		return nil // no recognisable sensitive patterns — not a finding
 	}
 
 	return &checkers.Finding{
 		Checker:    "PathDiscovery",
 		Severity:   checkers.SeverityMedium,
 		Title:      "Unauthenticated Access to Sensitive Endpoint",
-		Detail:     fmt.Sprintf("%s returned %d without credentials and response looks sensitive (%s)", c.Path, unauthCode, c.Description),
+		Detail:     fmt.Sprintf("%s returned %d without credentials and response contains sensitive fields (%s)", c.Path, unauthCode, c.Description),
 		Method:     "GET",
 		URL:        url,
 		StatusCode: unauthCode,

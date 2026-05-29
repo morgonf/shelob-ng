@@ -40,9 +40,10 @@ const (
 	// trigger well before this many identical requests complete.
 	burstSize = 8
 
-	// burstTimeout caps the total time spent on burst probes so a slow target
-	// doesn't block the checker goroutine indefinitely.
-	burstTimeout = 15 * time.Second
+	// burstTimeout caps the total time spent on burst probes. Kept short (5 s)
+	// to avoid occupying a checker semaphore slot for too long and stalling the
+	// main fuzzing loop when several endpoints burst simultaneously.
+	burstTimeout = 5 * time.Second
 )
 
 // RateLimitChecker detects API endpoints that accept unlimited rapid requests
@@ -198,6 +199,8 @@ func (r *RateLimitChecker) runBurst(
 // cloneRequestFull duplicates req preserving all headers and the body.
 // Unlike buildProbeWithCookies it does NOT strip auth headers — the burst test
 // must be identical to the original request, including credentials.
+// Content-Length is removed so Go's HTTP client computes it from the new body,
+// avoiding mismatches if an upstream proxy set a stale value on the original.
 func cloneRequestFull(ctx context.Context, req *http.Request, entry *corpus.CorpusEntry) (*http.Request, error) {
 	var bodyReader io.Reader
 	if req.GetBody != nil {
@@ -218,6 +221,8 @@ func cloneRequestFull(ctx context.Context, req *http.Request, entry *corpus.Corp
 			clone.Header.Add(key, v)
 		}
 	}
+	// Let net/http compute Content-Length from the actual body.
+	clone.Header.Del("Content-Length")
 	return clone, nil
 }
 

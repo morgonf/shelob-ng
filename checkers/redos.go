@@ -79,12 +79,15 @@ func (ReDosChecker) Check(
 		return nil
 	}
 
-	target := targets[0]
-
-	for _, probe := range reDoSProbes {
-		f := testTimingDelta(ctx, cctx, entry, req, target, probe.short, probe.long, probe.hint)
-		if f != nil {
-			return []Finding{*f}
+	// Test every collected target against every probe pattern.
+	// collectStringTargets returns at most 3 candidates; returning on the first
+	// confirmed finding avoids sending unnecessary probes.
+	for _, target := range targets {
+		for _, probe := range reDoSProbes {
+			f := testTimingDelta(ctx, cctx, entry, req, target, probe.short, probe.long, probe.hint)
+			if f != nil {
+				return []Finding{*f}
+			}
 		}
 	}
 	return nil
@@ -99,7 +102,9 @@ func testTimingDelta(
 	short, long, hint string,
 ) *Finding {
 	tShort, ok := rdMeasure(ctx, cctx.Client, orig, entry, target, short)
-	if !ok || tShort > reDoSMaxShort {
+	// tShort == 0 means the clock resolution is finer than the response time;
+	// skip to avoid division by zero (float64(x)/0 = +Inf ≥ any threshold).
+	if !ok || tShort == 0 || tShort > reDoSMaxShort {
 		return nil
 	}
 
@@ -154,6 +159,9 @@ func rdMeasure(ctx context.Context, client *http.Client, orig *http.Request, ent
 	if len(clone.Body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// Remove any stale Content-Length copied from the original request;
+	// Go's HTTP client will compute the correct value from the body.
+	req.Header.Del("Content-Length")
 
 	start := time.Now()
 	resp, err := client.Do(req)

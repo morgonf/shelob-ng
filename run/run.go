@@ -170,12 +170,27 @@ func Run() {
 	// Dedup set shared by pathscan, the main checker loop, and sequence findings.
 	var seenFindings sync.Map
 
+	// Signal-aware context: registered BEFORE pathscan so that Ctrl+C during the
+	// 60-second scan triggers a clean exit (corpus + api-coverage.json are saved).
+	runCtx, runCancel := context.WithCancel(context.Background())
+	defer runCancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		select {
+		case sig := <-sigCh:
+			log.Infof("run: received %s — stopping after current iteration", sig)
+			runCancel()
+		case <-runCtx.Done():
+		}
+	}()
+
 	// Path discovery pre-scan: probe hidden/undocumented paths once before the
 	// main loop. Findings are written to the output directory immediately.
 	{
 		extra := loadPathWordlist(cfg.PathWordlist)
 		scanner := pathscan.New(httpClient, targetURL, authCookies, cfg.ApiKey, cfg.Token, extra)
-		scanCtx, scanCancel := context.WithTimeout(*ctx, 60*time.Second)
+		scanCtx, scanCancel := context.WithTimeout(runCtx, 60*time.Second)
 		scanFindings := scanner.Scan(scanCtx)
 		scanCancel()
 		for _, f := range scanFindings {
@@ -205,21 +220,6 @@ func Run() {
 	if !cfg.EnableDebug {
 		log.SetLevel(log.WarnLevel)
 	}
-
-	// Signal-aware context: SIGINT / SIGTERM cause a clean exit after the current
-	// iteration so that api-coverage.json and corpus are always saved.
-	runCtx, runCancel := context.WithCancel(context.Background())
-	defer runCancel()
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		select {
-		case sig := <-sigCh:
-			log.Infof("run: received %s — stopping after current iteration", sig)
-			runCancel()
-		case <-runCtx.Done():
-		}
-	}()
 
 	// RPS rate limiter.
 	var ticker *time.Ticker
@@ -361,7 +361,9 @@ func Run() {
 					<-checkerSem
 					checkerWg.Done()
 				}()
-				findings := chk.Check(context.Background(), checkCtx, ent, r, rs, b)
+				// Use runCtx so that SIGINT cancels in-flight probe requests
+				// (e.g. RateLimitChecker burst probes, ReDoS timing probes).
+				findings := chk.Check(runCtx, checkCtx, ent, r, rs, b)
 				for _, f := range findings {
 					if logFinding(f, outDir, &seenFindings) {
 						display.Finding(f.Checker, f.Severity, f.Title, f.URL)
@@ -374,7 +376,7 @@ func Run() {
 		seqTick++
 		if len(seqs) > 0 && seqTick%20 == 0 {
 			idx := (seqTick/20 - 1) % len(seqs)
-			seqFindings, replay := seqRunner.Run(context.Background(), seqs[idx])
+			seqFindings, replay := seqRunner.Run(runCtx, seqs[idx])
 			sequence.SaveReplay(replay, cfg.OutputDir)
 			for _, f := range seqFindings {
 				if logSequenceFinding(f, cfg.OutputDir, &seenFindings) {

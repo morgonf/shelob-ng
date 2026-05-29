@@ -1,7 +1,6 @@
 package checkers
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -92,16 +91,17 @@ func (MassAssignment) Check(
 		return nil
 	}
 
-	probeReq, err := http.NewRequestWithContext(ctx, req.Method, req.URL.String(), bytes.NewReader(probeBody))
+	// Build probe using buildProbeWithCookies (strips stale auth headers, then
+	// re-applies them) to avoid copying a stale Content-Length from the original
+	// request that would mismatch the larger poison-fields body.
+	probeEntry := entry.Clone()
+	probeEntry.Body = probeBody
+	probeReq, err := buildProbeWithCookies(ctx, req, probeEntry, cctx.AuthCookies)
 	if err != nil {
 		log.Debugf("massassignment: build probe: %v", err)
 		return nil
 	}
-	for k, vals := range req.Header {
-		for _, v := range vals {
-			probeReq.Header.Add(k, v)
-		}
-	}
+	ApplyAuth(probeReq, cctx.APIKey, cctx.Token)
 	probeReq.Header.Set("Content-Type", "application/json")
 
 	probeResp, err := cctx.Client.Do(probeReq)
@@ -112,11 +112,8 @@ func (MassAssignment) Check(
 	defer probeResp.Body.Close()
 	probeRespBody, _ := io.ReadAll(io.LimitReader(probeResp.Body, 64*1024))
 
-	// Server correctly rejected the extra fields.
-	if probeResp.StatusCode == 422 || probeResp.StatusCode == 400 {
-		return nil
-	}
-	// Any other 4xx — also not a mass-assignment vulnerability.
+	// Any 4xx means the server rejected the probe — no finding.
+	// (422 and 400 are subsumed by the >= 400 check.)
 	if probeResp.StatusCode >= 400 {
 		return nil
 	}
@@ -167,10 +164,13 @@ func checkReflection(body []byte) []string {
 	var reflected []string
 	for field, injected := range poisonFields {
 		if val, ok := deepGet(respObj, field); ok {
-			// Compare as JSON-serialised strings so bool/int comparisons work.
-			injStr := fmt.Sprintf("%v", injected)
-			valStr := fmt.Sprintf("%v", val)
-			if injStr == valStr {
+			// Compare via json.Marshal so Go types and JSON types are normalised
+			// identically: bool true→"true", int 99999→"99999", and JSON float64
+			// representations are handled consistently regardless of the server's
+			// exact numeric encoding (99999 vs 99999.0 vs 9.9999e4).
+			injJSON, err1 := json.Marshal(injected)
+			valJSON, err2 := json.Marshal(val)
+			if err1 == nil && err2 == nil && string(injJSON) == string(valJSON) {
 				reflected = append(reflected, field)
 			}
 		}
