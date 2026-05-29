@@ -5,7 +5,7 @@ and mutates HTTP requests, and runs a suite of security checkers on every
 response — all without modifying or recompiling the target application.
 
 ```
-INFO: spec: juice-shop.openapi.json       target: http://localhost:3000
+INFO: spec: juice-shop.openapi.yaml       target: http://localhost:3000
 INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterFree InvalidDynamicObject LeakageRule NameSpaceRule SchemaViolation
 
 #0       INITED   cov:     0  corpus:   171  ops:   0/95   req/s:     0  2xx:     0  4xx:     0  5xx:     0
@@ -1058,7 +1058,7 @@ make setup
 1. `go build` the shelob-ng binary at the repo root
 2. `docker compose up -d` (Juice Shop on port 3000)
 3. Creates `fuzzer@shelob.local` and `victim@shelob.local` via the registration API
-4. Validates the bundled OpenAPI spec (`juice-shop.openapi.json`, 95 operations)
+4. Downloads or validates the official Juice Shop spec (B2B API: 1 path; downloaded from GitHub if missing)
 
 **Scenario overview:**
 

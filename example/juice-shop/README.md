@@ -17,7 +17,7 @@ example/
   config.env                  shared config: URLs, credentials, paths
   docker-compose.yml          standard Juice Shop (port 3000)
   docker-compose.csp.yml      Juice Shop + CSP sidecar (ports 3000 + 8080)
-  juice-shop.openapi.json     OpenAPI spec (extracted from the running container)
+  juice-shop.openapi.yaml     OpenAPI spec (official Juice Shop B2B API; 1 path)
   payloads/
     sqli.txt                  SQL injection payloads
     xss.txt                   XSS payloads
@@ -90,7 +90,7 @@ curl -s -X POST http://localhost:3000/api/Users \
        "securityAnswer":"shelob"}'
 
 # 4. Fetch the OpenAPI spec
-curl -s http://localhost:3000/api-docs -o juice-shop.openapi.json
+curl -sL https://raw.githubusercontent.com/juice-shop/juice-shop/master/swagger.yml -o juice-shop.openapi.yaml
 ```
 
 > **Note:** Docker restarts wipe the in-memory database. Re-run step 3 after
@@ -130,7 +130,7 @@ make run-1
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -duration 5m \
   -output   results/01_pure_random
@@ -140,7 +140,7 @@ make run-1
 
 | Flag | Value | Purpose |
 |------|-------|---------|
-| `-spec` | `juice-shop.openapi.json` | OpenAPI 3.x spec; corpus is seeded from it |
+| `-spec` | `juice-shop.openapi.yaml` | OpenAPI 3.x spec; corpus is seeded from it |
 | `-url` | `http://localhost:3000` | Target base URL |
 | `-duration` | `5m` | Stop after 5 minutes |
 | `-output` | `results/01_pure_random` | Write findings and coverage report here |
@@ -167,7 +167,7 @@ make run-2
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -205,7 +205,7 @@ make run-3
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -247,7 +247,7 @@ make run-4
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -324,7 +324,7 @@ curl -s -X POST http://localhost:3000/api/Users \
 
 # 4. Run the fuzzer
 ./shelob-ng \
-  -spec       juice-shop.openapi.json \
+  -spec       juice-shop.openapi.yaml \
   -url        http://localhost:3000 \
   -user       fuzzer@shelob.local \
   -password   Shelob1! \
@@ -376,7 +376,7 @@ mkdir -p corpus/scenario6
 
 # Run 1 — build corpus
 ./shelob-ng \
-  -spec       juice-shop.openapi.json \
+  -spec       juice-shop.openapi.yaml \
   -url        http://localhost:3000 \
   -user       fuzzer@shelob.local \
   -password   Shelob1! \
@@ -386,7 +386,7 @@ mkdir -p corpus/scenario6
 
 # Run 2 — load saved corpus, continue
 ./shelob-ng \
-  -spec       juice-shop.openapi.json \
+  -spec       juice-shop.openapi.yaml \
   -url        http://localhost:3000 \
   -user       fuzzer@shelob.local \
   -password   Shelob1! \
@@ -434,7 +434,7 @@ make run-7
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -447,7 +447,7 @@ make run-7
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -461,7 +461,7 @@ make run-7
 
 ```bash
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -507,7 +507,7 @@ make run-8                     # recommended: 1 hour
 # and two accounts created (see One-time setup above)
 
 ./shelob-ng \
-  -spec       juice-shop.openapi.json \
+  -spec       juice-shop.openapi.yaml \
   -url        http://localhost:3000 \
   -user       fuzzer@shelob.local \
   -password   Shelob1! \
@@ -588,7 +588,7 @@ curl -s -o /dev/null -w "whoami: HTTP %{http_code}\n" \
 
 # Step 3: run the fuzzer
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -token    "$JWT" \
   -duration 5m \
@@ -631,7 +631,7 @@ make run-10
 ```bash
 # Step 1: run with LeakageRule only
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local \
   -password Shelob1! \
@@ -708,7 +708,7 @@ PASS: zero findings triggered by 401/403 (auth rejections correctly excluded)
 | `BehavioralPatterns` | ~55 | Node.js stack trace in 500 response |
 | `InvalidDynamicObject` | ~20 | `DELETE /api/Addresss/` → 500 (empty path param) |
 | `LeakageRule` | 0–2 | POST 4xx on singleton endpoint (with path params) leaves readable state |
-| `PathDiscovery` | 1–3 | `/metrics` — Prometheus endpoint unauthenticated (J20) |
+| `PathDiscovery` | 0–1 | `/ftp/acquisitions.md` — confidential doc accessible (J17); note: `/metrics` returns Prometheus format which does NOT match sensitiveBodyRE |
 | `RateLimitChecker` | 3–8 | `/rest/user/login` — HIGH: 8 rapid requests, none returned 429 |
 | `MassAssignment` | 1–3 | `POST /api/Users` — fields `role:admin` accepted without 422 |
 
@@ -735,10 +735,15 @@ Juice Shop exposes several endpoints not in the main spec:
 
 | Path | Finding | Juice Shop challenge |
 |------|---------|---------------------|
-| `/metrics` | HIGH — Prometheus metrics unauthenticated | Exposed Metrics (J20) |
-| `/ftp` | MEDIUM — file server accessible | Confidential Document (J17) |
-| `/support/logs` | MEDIUM — access logs exposed | Access Log challenge |
+| `/metrics` | none — Prometheus text format doesn't match `sensitiveBodyRE` patterns | Exposed Metrics (J20) — detected by `AuthBypassRule` if spec lists it |
+| `/ftp/acquisitions.md` | MEDIUM — confidential text document accessible unauthenticated | Confidential Document (J17) |
+| `/support/logs` | MEDIUM if response contains sensitive keywords | Access Log challenge |
 | `/security.txt` | INFO — security policy | Security Policy challenge |
+
+> **Note:** PathDiscovery fires only when `sensitiveBodyRE` matches the body
+> (`SECRET_KEY`, `DATABASE_URL`, `"password":`, `process.env.` etc.) or when a
+> path description contains "admin" and the server returns 403. Prometheus
+> `/metrics` returns counter data that does not match these patterns.
 
 ```bash
 # Extend PathDiscovery with Juice Shop-specific paths:
@@ -750,7 +755,7 @@ cat > /tmp/juice-shop-paths.txt << 'EOF'
 EOF
 
 ./shelob-ng \
-  -spec     juice-shop.openapi.json \
+  -spec     juice-shop.openapi.yaml \
   -url      http://localhost:3000 \
   -user     fuzzer@shelob.local -password Shelob1! \
   -path-wordlist /tmp/juice-shop-paths.txt \
