@@ -1,0 +1,12 @@
+services:
+  vampi:
+    image: erev0s/vampi:latest
+    ports:
+      - "5000:5000"
+    environment:
+      # Set to 1 to enable all vulnerabilities (default mode for testing)
+      vulnerable: 1
+      # Extend token TTL to 1 hour — the default 60s causes auth failures
+      # during longer fuzzing sessions
+      tokentimetolive: 3600
+    restart: unless-stopped

@@ -13,8 +13,8 @@ ok()   { echo -e "${GREEN}[OK]${NC} $*"; }
 # 1. Build fuzzer
 # -----------------------------------------------------------------------
 step "Building shelob-ng..."
-(cd .. && go build -o shelob-ng . && ok "shelob-ng built: $(pwd)/shelob-ng")
-export FUZZER=../shelob-ng
+(cd ../.. && go build -o shelob-ng . && ok "shelob-ng built: $(pwd)/shelob-ng")
+export FUZZER=../../shelob-ng
 
 # -----------------------------------------------------------------------
 # 2. Pull Docker image (skip if already present)

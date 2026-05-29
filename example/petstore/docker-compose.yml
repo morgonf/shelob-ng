@@ -1,0 +1,6 @@
+services:
+  petstore:
+    image: swaggerapi/petstore3:unstable
+    ports:
+      - "8080:8080"
+    restart: unless-stopped

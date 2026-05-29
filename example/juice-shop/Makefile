@@ -58,10 +58,10 @@ help:
 	@echo "  Override durations:"
 	@echo "    DURATION_QUICK=2m DURATION_STANDARD=5m make run-quick"
 
-## build: compile shelob-ng binary
+## build: compile shelob-ng binary (output at repo root)
 build:
-	cd .. && go build -o shelob-ng .
-	@echo "Built: ../shelob-ng"
+	cd ../.. && go build -o shelob-ng .
+	@echo "Built: ../../shelob-ng"
 
 ## check: verify prerequisites
 check:
