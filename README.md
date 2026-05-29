@@ -995,47 +995,58 @@ GET /csp/dump:
 
 ---
 
-## Example: OWASP Juice Shop
+## Examples: Test Targets
 
-The `example/` directory contains ready-to-run examples for **6 test targets**,
+The `example/` directory contains ready-to-run fuzzing setups for **6 test targets**,
 each in its own subdirectory with a `Makefile`, `config.env`, and numbered
 scenario scripts.
 
-| Directory | Target | Focus |
-|-----------|--------|-------|
-| `example/juice-shop/` | OWASP Juice Shop | Full OWASP Top 10 + API, 10 scenarios |
-| `example/vampi/` | VAmPI | 9 documented vulns, switchable mode |
-| `example/crapi/` | crAPI (OWASP) | All OWASP API Top 10 2023 + LLM |
-| `example/dvws-node/` | DVWS-Node | 39 classes: cmdi, LDAP, XPATH, XXE |
-| `example/petstore/` | Swagger Petstore 3 | Sandbox baseline + OAuth2/apiKey |
-| `example/restler-demo/` | RESTler Demo Server | Producer-consumer graph test |
+| Directory | Target | Type | Focus |
+|-----------|--------|------|-------|
+| `example/juice-shop/` | OWASP Juice Shop | Vulnerable | Full OWASP Top 10 + API Top 10, 10 scenarios, CSP support |
+| `example/vampi/` | VAmPI | Vulnerable | 9 documented vulns, switchable secure/insecure mode |
+| `example/crapi/` | crAPI (OWASP) | Vulnerable | All OWASP API Top 10 2023 + LLM injection |
+| `example/dvws-node/` | DVWS-Node | Vulnerable | 39 classes: SQLi, NoSQL, cmdi, LDAP, XPATH, XXE, GraphQL |
+| `example/petstore/` | Swagger Petstore 3 | Sandbox | Baseline benchmark, OAuth2 implicit + apiKey |
+| `example/restler-demo/` | RESTler Demo Server | Demo | Producer-consumer dependency graph test |
 
-**Quick test (all new checkers, 2 min):**
+Each target has a full `README.md` with detailed scenario instructions,
+expected findings, and troubleshooting. See `example/README.md` for an index.
+
+**Quickest way to verify all checkers (2 min):**
 ```bash
 cd example/vampi/
 make setup && make run-1
-# Expected: ~33 findings (7 HIGH): PathDiscovery HIGH on /users/v1/_debug,
-#           RateLimitChecker HIGH on login, ReDoSChecker MEDIUM, MassAssignment MEDIUM
+# Expected: ~33 findings (7 HIGH):
+#   PathDiscovery HIGH — /users/v1/_debug exposes all passwords
+#   RateLimitChecker HIGH — /users/v1/login accepts unlimited requests
+#   BehavioralPatterns HIGH — SQLi error in /users/v1/{username}
+#   ReDoSChecker MEDIUM — email regex catastrophic backtracking
+#   MassAssignment MEDIUM — POST /register accepts admin:true silently
 ```
 
-### Juice Shop — detailed walkthrough
+---
 
-### Prerequisites
+### Juice Shop — 10 scenarios with CSP coverage
+
+The most comprehensive example. Covers authentication flows, BOLA, payload
+injection, corpus persistence, coverage-guided mode, and selective checker runs.
+
+**Prerequisites:**
 
 | Tool | Version | Purpose |
 |------|---------|---------|
 | Go | ≥ 1.22 | Build shelob-ng |
-| Docker | ≥ 20.x | Run Juice Shop |
-| Docker Compose v2 | | Orchestrate containers |
+| Docker + Compose v2 | ≥ 20.x | Run Juice Shop |
 | `curl` | any | Account creation, health checks |
 | `jq` | any | Pretty-print findings (optional) |
 
-### Setup (one time)
+**Setup (one time):**
 
 ```bash
 cd example/juice-shop/
 
-# Check prerequisites
+# Verify prerequisites (Go, Docker, curl)
 make check
 
 # Build fuzzer, start Juice Shop on :3000, create two accounts, fetch spec
@@ -1043,37 +1054,41 @@ make setup
 ```
 
 `make setup` runs in order:
-1. `go build` the fuzzer binary
-2. `docker compose up -d` (standard Juice Shop on port 3000)
+1. `go build` the shelob-ng binary at the repo root
+2. `docker compose up -d` (Juice Shop on port 3000)
 3. Creates `fuzzer@shelob.local` and `victim@shelob.local` via the registration API
-4. Fetches the OpenAPI spec from the running container
+4. Validates the bundled OpenAPI spec (`juice-shop.openapi.json`, 95 operations)
 
-### Running scenarios
+**Scenario overview:**
+
+| Target | Scenario | Auth | Features | Duration |
+|--------|----------|------|---------|---------|
+| `make run-1` | Pure random | — | all checkers | 5 min |
+| `make run-2` | Authenticated | cookie login | all checkers | 5 min |
+| `make run-3` | BOLA detection | cookie, 2 users | NameSpaceRule | 5 min |
+| `make run-4` | Payload injection | cookie | SQLi/XSS/SSTI/LFI wordlists | 15 min |
+| `make run-5` | Coverage-guided | cookie | CSP sidecar, requires `make start-csp` | 15 min |
+| `make run-6` | Corpus persistence | cookie | save → resume two runs | 5+5 min |
+| `make run-7` | Selective checkers | cookie | three sub-scenarios | 5 min × 3 |
+| `make run-8` | Full audit | cookie + 2 users | all features simultaneously | 1 h |
+| `make run-9` | Bearer token auth | JWT `-token` | no cookie login | 5 min |
+| `make run-10` | LeakageRule verify | cookie | LeakageRule only | 5 min |
 
 ```bash
-make run-1    # pure random (5 min)
-make run-2    # authenticated (5 min)
-make run-3    # BOLA / NameSpaceRule (5 min, two users)
-make run-4    # payload injection: SQLi, XSS, SSTI, LFI (15 min)
-make run-5    # coverage-guided — needs: make start-csp first (15 min)
-make run-6    # corpus persistence: two successive runs (5+5 min)
-make run-7    # selective checkers (three sub-scenarios)
-make run-8    # full: everything enabled (1 h; DURATION_FULL=5m for quick check)
-make run-9    # Bearer token auth (-token flag, no cookie login) (5 min)
-make run-10   # LeakageRule false-positive verification (5 min)
-
-make run-quick    # scenarios 1–4 back-to-back
-make run-all      # all 10 scenarios (run-5 needs CSP image)
-make report       # aggregate findings from all results/
+make run-quick    # scenarios 1–4 back-to-back (no CSP required)
+make run-all      # all 10 scenarios (run-5 requires make start-csp)
+make report       # aggregate findings across all results/
 ```
 
-### Coverage-guided setup (scenario 5)
+**Coverage-guided setup (scenario 5):**
 
 ```bash
-# Build the CSP-instrumented image (one time)
+cd example/juice-shop/
+
+# Build the CSP-instrumented Docker image (one time)
 docker compose -f docker-compose.yml -f docker-compose.csp.yml build
 
-# Start: Juice Shop on :3000 + CSP sidecar on :8080
+# Start Juice Shop on :3000 + CSP V8 sidecar on :8080
 make start-csp
 
 # Run coverage-guided scenario
@@ -1081,12 +1096,11 @@ make run-5
 ```
 
 The CSP adapter (`csp/adapter.js`) uses the V8 Inspector
-`Profiler.startPreciseCoverage` API. It starts a second HTTP server on port
-8080 that responds to `POST /csp/reset` and `GET /csp/dump`.
+`Profiler.startPreciseCoverage` API, exposing `POST /csp/reset` and
+`GET /csp/dump` on port 8080. See [docs/csp-servers.md](docs/csp-servers.md)
+for full setup details.
 
-### Expected findings (run-8, 5 min, all features)
-
-Results from a representative 5-minute full run on a default Juice Shop install:
+**Expected findings — run-8, 5-minute quick run (`DURATION_FULL=5m make run-8`):**
 
 ```
 DONE  #8423  cov: 51204  corpus: 1831  ops: 93/95 (97%)  req/s: 27.4  findings: 154  elapsed: 5m0s
@@ -1094,21 +1108,22 @@ DONE  #8423  cov: 51204  corpus: 1831  ops: 93/95 (97%)  req/s: 27.4  findings: 
 === API spec coverage: 93/95 reached (97%), 26/95 succeeded (2xx) ===
 ```
 
-| Checker | Count | Example |
-|---------|-------|---------|
-| `SchemaViolation` | 74 | Response body missing declared fields |
-| `BehavioralPatterns` | 55 | Node.js stack traces in 500 responses |
-| `InvalidDynamicObject` | 20 | Server crash on `DELETE /api/Addresss/` |
-| `LeakageRule` | 0–2 | POST 4xx on singleton endpoint leaves readable state |
+| Checker | Typical count | Representative finding |
+|---------|--------------|----------------------|
+| `SchemaViolation` | ~74 | Response body missing declared fields |
+| `BehavioralPatterns` | ~55 | Node.js stack trace in 500 response |
+| `InvalidDynamicObject` | ~20 | `DELETE /api/Addresss/` → 500 on empty path param |
+| `PathDiscovery` | 1–3 | `/metrics` — Prometheus endpoint unauthenticated |
+| `RateLimitChecker` | 3–8 | `/rest/user/login` — no 429 after burst of 8 requests |
+| `MassAssignment` | 1–3 | `POST /api/Users` — `role:admin` accepted without 422 |
+| `LeakageRule` | 0–2 | POST 4xx on singleton endpoint, resource visible via GET |
+| `AuthBypassRule` | 0–2 | Spec-secured operation returns 2xx without credentials |
 
-`LeakageRule` skips: 401 (auth rejected before any logic ran), and collection
-endpoints (no path parameters — `POST /collection` followed by
-`GET /collection` returning 200 is expected REST behaviour, not a leak).
-It triggers only on singleton endpoints (e.g. `POST /api/users/{id}`) where a
-genuine commit-then-validate bug could leave a partially-written resource
-accessible at the specific resource URL.
+`LeakageRule` skips 401 (auth rejected before logic) and collection endpoints
+(no path params — `POST /collection → GET /collection → 200` is expected REST,
+not a state leak). It fires only on singleton paths like `POST /api/orders/{id}`.
 
-**High-severity finding:**
+**Reproducible HIGH finding:**
 
 ```
 [BehavioralPatterns] SQL Error Leakage — HIGH
@@ -1116,41 +1131,37 @@ Operation: GET /rest/products/search
 Detail:    pattern matched: SQLITE_ERROR
 
 POC:
-curl -v -X GET 'http://localhost:3000/rest/products/search?q=%00'
+curl -v 'http://localhost:3000/rest/products/search?q=%00'
 ```
 
-Sending a null byte as the search parameter causes Juice Shop to return an
-`SQLITE_ERROR` string in the response body, leaking database engine information.
+A null byte in the search parameter reaches SQLite unescaped and leaks
+`SQLITE_ERROR` in the response body.
 
-### Reading findings
+**Working with findings:**
 
 ```bash
-# List all unique findings
+# List all unique finding files
 ls results/08_full/findings/
 
-# Pretty-print one finding (includes POC)
-jq . results/08_full/findings/BehavioralPatterns_GET__rest_products_search.json
+# Pretty-print one finding (includes POC curl command)
+jq . results/08_full/findings/BehavioralPatterns_GET__rest_products_search_*.json
 
-# Count by checker
-jq -r '.checker' results/08_full/findings/*.json | sort | uniq -c | sort -rn
+# Count by checker across all scenarios
+jq -r '.checker' results/*/findings/*.json | sort | uniq -c | sort -rn
 
-# Extract all POC commands
-jq -r 'select(.poc) | "# \(.title)\n" + .poc + "\n"' \
+# Extract all POC commands ready to paste
+jq -r 'select(.poc) | "# \(.checker): \(.title)\n" + .poc + "\n"' \
    results/08_full/findings/*.json
 
-# Show API coverage summary
+# API coverage summary
 jq '{reached: .visited_count, succeeded: .succeeded_count, total: .total}' \
    results/08_full/api-coverage.json
 ```
 
-### Aggregate report
-
 ```bash
+# Aggregate report across all runs
 make report
 ```
-
-Prints per-scenario tables, checker breakdown, and for each finding: the
-operation, detail, and full `curl` reproduction command.
 
 ---
 
