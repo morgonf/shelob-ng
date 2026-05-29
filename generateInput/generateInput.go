@@ -9,7 +9,31 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+// maxGenerateDepth caps recursion for circular or deeply nested schemas
+// (e.g. Kubernetes Container → Volume → Container). Five levels covers
+// virtually every real-world spec without risking a stack overflow.
+const maxGenerateDepth = 5
+
+// GenerateRandomDataModels generates a random value that conforms to schema.
+// It handles primitive types, objects, arrays, and allOf/oneOf/anyOf composition.
+// Safe against circular $ref chains — recursion is capped at maxGenerateDepth.
 func GenerateRandomDataModels(schema *openapi3.Schema) interface{} {
+	return generateRandom(schema, 0)
+}
+
+func generateRandom(schema *openapi3.Schema, depth int) interface{} {
+	if depth > maxGenerateDepth {
+		return nil
+	}
+
+	// Resolve composition keywords before checking Type.
+	// allOf/oneOf/anyOf schemas often have no explicit Type field of their own.
+	if len(schema.AllOf) > 0 || len(schema.OneOf) > 0 || len(schema.AnyOf) > 0 {
+		if resolved := resolveComposed(schema); resolved != nil {
+			return generateRandom(resolved, depth+1)
+		}
+	}
+
 	if schema.Type == nil || len(*schema.Type) == 0 {
 		log.Warn("Schema type is nil or empty")
 		return ""
@@ -69,14 +93,14 @@ func GenerateRandomDataModels(schema *openapi3.Schema) interface{} {
 	case "array":
 		var array []interface{}
 		if schema.Items != nil && schema.Items.Value != nil {
-			array = append(array, GenerateRandomDataModels(schema.Items.Value))
+			array = append(array, generateRandom(schema.Items.Value, depth+1))
 		}
 		return array
 	case "object":
 		objects := make(map[string]interface{})
 		for property, schemaInternal := range schema.Properties {
 			if schemaInternal.Value != nil {
-				objects[property] = GenerateRandomDataModels(schemaInternal.Value)
+				objects[property] = generateRandom(schemaInternal.Value, depth+1)
 			}
 		}
 		return objects
@@ -84,6 +108,53 @@ func GenerateRandomDataModels(schema *openapi3.Schema) interface{} {
 		log.Warn("Unresolved schema type:", schemaType)
 	}
 	return ""
+}
+
+// resolveComposed flattens allOf/oneOf/anyOf into a concrete schema for generation.
+//
+// allOf: merges properties from every sub-schema into one object. This is the
+// correct approach for inheritance patterns (e.g. ExtendedAddress allOf Address).
+//
+// oneOf/anyOf: picks one branch at random. Choosing randomly on each call means
+// different corpus entries exercise different server code paths.
+//
+// Returns nil when no composition keywords are present.
+func resolveComposed(s *openapi3.Schema) *openapi3.Schema {
+	if len(s.AllOf) > 0 {
+		t := openapi3.Types{"object"}
+		merged := &openapi3.Schema{
+			Type:       &t,
+			Properties: make(openapi3.Schemas),
+		}
+		for _, ref := range s.AllOf {
+			if ref.Value == nil {
+				continue
+			}
+			for k, v := range ref.Value.Properties {
+				merged.Properties[k] = v
+			}
+			merged.Required = append(merged.Required, ref.Value.Required...)
+		}
+		// Include any properties declared alongside allOf (valid in OAS 3.1).
+		for k, v := range s.Properties {
+			merged.Properties[k] = v
+		}
+		return merged
+	}
+
+	if len(s.OneOf) > 0 {
+		if picked := s.OneOf[gofakeit.IntRange(0, len(s.OneOf)-1)]; picked.Value != nil {
+			return picked.Value
+		}
+	}
+
+	if len(s.AnyOf) > 0 {
+		if picked := s.AnyOf[gofakeit.IntRange(0, len(s.AnyOf)-1)]; picked.Value != nil {
+			return picked.Value
+		}
+	}
+
+	return nil
 }
 
 // generateBoundedInt generates a random int64 within [min, max].
