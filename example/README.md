@@ -7,14 +7,14 @@
 
 ## Тестовые мишени
 
-| Директория | Мишень | Тип | Уязвимости | Сложность запуска |
-|-----------|--------|-----|-----------|-----------------|
-| [`juice-shop/`](juice-shop/) | OWASP Juice Shop | vulnerable | Full OWASP Top 10 + API | Простой (`docker`) |
-| [`vampi/`](vampi/) | VAmPI | vulnerable | BOLA, SQLi, mass assign, JWT | Простой (`docker`) |
-| [`crapi/`](crapi/) | crAPI (OWASP) | vulnerable | Все OWASP API Top 10 2023 + LLM | Средний (`docker compose`) |
-| [`dvws-node/`](dvws-node/) | DVWS-Node | vulnerable | 39 классов: XML, NoSQL, GraphQL | Средний (внешний repo) |
-| [`petstore/`](petstore/) | Swagger Petstore 3 | sandbox | Нет (эталонная реализация) | Простой (`docker`) |
-| [`restler-demo/`](restler-demo/) | RESTler Demo | demo | Нет (тест producer-consumer) | Простой (Python) |
+| Директория | Мишень | Тип | Ключевые уязвимости | Сложность |
+|-----------|--------|-----|-------------------|----------|
+| [`juice-shop/`](juice-shop/) | OWASP Juice Shop | vulnerable | Full OWASP Top 10 + API, 100+ challenges | Простой (`docker`) |
+| [`vampi/`](vampi/) | VAmPI | vulnerable | BOLA, SQLi, ReDoS, Mass Assignment, Rate Limit | Простой (`docker`) |
+| [`crapi/`](crapi/) | crAPI (OWASP) | vulnerable | Все OWASP API Top 10 2023 + LLM + SSRF | Средний (`docker compose`) |
+| [`dvws-node/`](dvws-node/) | DVWS-Node | vulnerable | 39 классов: cmdi, LDAP, XPATH, NoSQL, XXE | Средний (внешний repo) |
+| [`petstore/`](petstore/) | Swagger Petstore 3 | sandbox | Нет — базовый benchmark | Простой (`docker`) |
+| [`restler-demo/`](restler-demo/) | RESTler Demo | demo | Нет — тест producer-consumer graph | Простой (Python) |
 
 ---
 
@@ -137,10 +137,15 @@ jq -r '.poc' results/*/findings/*.json    # все POC команды
 
 | Задача | Рекомендуемая мишень |
 |--------|---------------------|
-| Первый запуск, быстрый результат | `vampi` |
+| Первый запуск, быстрый результат | `vampi` (2 мин → 33 findings) |
 | Полное покрытие OWASP API Top 10 | `crapi` |
-| Тест injection (SQLi, cmdi, XML) | `dvws-node` |
+| Тест injection (SQLi, cmdi, LDAP, XPATH) | `dvws-node` |
 | Тест JWT/Bearer auth | `juice-shop` (scenario 9) |
 | Тест OAuth2 + apiKey | `petstore` |
 | Тест producer-consumer graph | `restler-demo` |
 | Тест CSP coverage-guided mode | `juice-shop` (scenario 5, 8) |
+| Тест PathDiscovery | `vampi` (`/users/v1/_debug`) + `dvws-node` (`/v1/info`) |
+| Тест RateLimitChecker | `vampi` (все endpoints без 429) |
+| Тест MassAssignment | `vampi` + `crapi` |
+| Тест ReDoSChecker | `vampi` (email regex 258x slowdown) |
+| Тест SSRF мутатора | `crapi` (`mechanic_api` field) |
