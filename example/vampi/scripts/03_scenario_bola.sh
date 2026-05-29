@@ -2,7 +2,7 @@
 # Scenario 2 — BOLA/IDOR detection (NameSpaceRule)
 #
 # VAmPI is explicitly designed to be vulnerable to BOLA:
-#   admin1 creates a book → user2 can read/update/delete it.
+#   name1 creates a book → name2 can read/update/delete it.
 #
 # Also exercises the dual docker-compose mode: run with vulnerable=1 and then
 # swap to the secure image (vulnerable=0) as a baseline comparison.
@@ -10,8 +10,8 @@
 # OWASP API Security A01:2023 — Broken Object Level Authorization.
 #
 # Expected HIGH findings:
-#   NameSpaceRule: GET /books/v1/{book} — user2 reads admin1's book
-#   NameSpaceRule: GET /users/v1/{username} — user2 reads admin1's profile
+#   NameSpaceRule: GET /books/v1/{book} — name2 reads name1's book
+#   NameSpaceRule: GET /users/v1/{username} — name2 reads name1's profile
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source ./config.env

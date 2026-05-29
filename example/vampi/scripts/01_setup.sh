@@ -38,10 +38,11 @@ else
 fi
 
 # 4. Verify default users exist by attempting login
-step "Verifying admin1 / pass1 login..."
+# VAmPI seeds: name1/pass1, name2/pass2, admin/pass1
+step "Verifying name1 / pass1 login..."
 TOKEN=$(curl -s -X POST "${VAMPI_URL}/users/v1/login" \
     -H "Content-Type: application/json" \
-    -d '{"username":"admin1","password":"pass1"}' \
+    -d '{"username":"name1","password":"pass1"}' \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('auth_token',''))" 2>/dev/null || true)
 if [ -n "$TOKEN" ]; then
     ok "Login OK — token received"

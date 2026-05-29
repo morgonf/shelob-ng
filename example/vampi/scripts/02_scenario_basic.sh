@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Scenario 1 — Basic authenticated scan
 #
-# Logs in as admin1 and fuzzes all endpoints with random data + all checkers.
+# Logs in as name1 and fuzzes all endpoints with random data + all checkers.
 #
 # Key VAmPI features exercised:
 #   - JWT Bearer auth (via -user/-password; auto-detected login endpoint)

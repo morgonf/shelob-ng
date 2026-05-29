@@ -29,15 +29,30 @@ func CreateUserWithLoginEndpoint(username, password, url, loginEndpoint string) 
 	return cookies
 }
 
-// Login authenticates and returns both the session cookies and the raw JWT
-// token string. The token is useful for targets whose endpoints require
-// Authorization: Bearer rather than (or in addition to) cookie-based auth.
-// token is empty when no JWT was found.
+// Login authenticates and returns session cookies and a JWT token.
+//
+// Two login body formats are tried in order to support different APIs:
+//   1. {"username": ...}  — standard REST APIs (VAmPI, Petstore, most APIs)
+//   2. {"email": ...}     — email-based APIs (Juice Shop /rest/user/login)
+//
+// For endpoints under /rest/ the order is reversed (email first) since
+// Juice Shop is the canonical email-based target.
+// The first format that returns 200 with a token or cookie is used.
 func Login(username, password, url, loginEndpoint string) (cookies []*http.Cookie, token string) {
-	if strings.Contains(loginEndpoint, "/rest/") || strings.Contains(loginEndpoint, "/login") {
-		return UserItem{Email: username, Password: password}.login(url, loginEndpoint)
+	candidates := []UserItem{
+		{Username: username, Password: password},
+		{Email: username, Password: password},
 	}
-	return UserItem{Username: username, Password: password}.login(url, loginEndpoint)
+	// Juice Shop and similar /rest/ APIs use email as the login field.
+	if strings.Contains(loginEndpoint, "/rest/") {
+		candidates[0], candidates[1] = candidates[1], candidates[0]
+	}
+	for _, candidate := range candidates {
+		if c, t := candidate.login(url, loginEndpoint); len(c) > 0 || t != "" {
+			return c, t
+		}
+	}
+	return []*http.Cookie{}, ""
 }
 
 func (testUser UserItem) login(url, loginEndpoint string) (cookies []*http.Cookie, token string) {
@@ -105,8 +120,8 @@ func (testUser UserItem) login(url, loginEndpoint string) (cookies []*http.Cooki
 
 // extractToken walks common JSON shapes to find a JWT string.
 func extractToken(m map[string]interface{}) string {
-	// Direct fields
-	for _, key := range []string{"token", "access_token", "accessToken", "jwt"} {
+	// Direct fields — auth_token is used by VAmPI; token/access_token by most others.
+	for _, key := range []string{"token", "auth_token", "access_token", "accessToken", "jwt"} {
 		if v, ok := m[key].(string); ok && v != "" {
 			return v
 		}

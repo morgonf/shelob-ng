@@ -4,7 +4,7 @@
 Один из лучших targets для shelob-ng: **полная OpenAPI 3.x spec**, все 9 уязвимостей
 точно задокументированы, есть switchable vulnerable/secure mode для baseline сравнения.
 
-**Проверено 2026-05-29:** 2-минутный прогон → 33 findings (7 HIGH, 26 MEDIUM), 100% coverage.
+**Проверено 2026-05-29:** 2-минутный прогон → ~31 findings (6 HIGH), 100% coverage.
 
 ---
 
@@ -57,7 +57,7 @@ make setup
 #   - go build -o ../../shelob-ng . (сборка бинарника)
 #   - docker compose up -d (запуск erev0s/vampi:latest)
 #   - GET /createdb (обязательный seed БД)
-#   - проверяет логин admin1/pass1
+#   - проверяет логин name1/pass1
 #   - скачивает openapi3.yaml (12 paths, 12 endpoints)
 
 # 2. Проверить что всё работает
@@ -100,29 +100,39 @@ make run-1
 ./../../shelob-ng \
   -spec     openapi3.yaml \
   -url      http://localhost:5000 \
-  -user     admin1 -password pass1 \
+  -user     name1 -password pass1 \
   -csp-disable \
   -duration 2m \
   -output   results/01_basic
 ```
 
-**Ожидаемые findings за 2 минуты:**
+**Ожидаемые findings за 2 минуты (верифицировано 2026-05-29, ~31 finding, 6 HIGH):**
 
 | Checker | Severity | Finding |
 |---------|----------|---------|
 | PathDiscovery | **HIGH** | `/users/v1/_debug` — пароли всех пользователей открыты (V5) |
-| RateLimitChecker | **HIGH** | `POST /users/v1/login` — нет 429, 8 запросов ответили 200×8 (V8) |
+| RateLimitChecker | **HIGH** | `POST /users/v1/login` — нет 429 после burst 8 запросов (V8) |
 | RateLimitChecker | **HIGH** | `PUT /users/v1/{username}/password` — нет 429 (V8) |
+| RateLimitChecker | **HIGH** | `POST /users/v1/register` — нет 429 (V8) |
 | RateLimitChecker | MEDIUM | все остальные endpoints — нет 429 (V8) |
 | BehavioralPatterns | **HIGH** | SQLi в `/users/v1/{username}` — `near "A": syntax error` (V1) |
-| MassAssignment | MEDIUM | `POST /register` — поля `admin:true, role:"admin"` приняты без 422 (V4) |
-| ReDoSChecker | MEDIUM | `POST /login` — `password` field: ratio 258x/835ms (V7) |
+| BehavioralPatterns | HIGH | XSS тег в HTML-ответе `/createdb` при 500 — Flask/Werkzeug debug page |
+| MassAssignment | MEDIUM | `POST /register` и `POST /login` — поля `admin:true` приняты без 422 (V4) |
+| ReDoSChecker | MEDIUM | `POST /login` и `POST /register` — timing ratio >100x (V7) |
+| SchemaViolation | MEDIUM | ~8 endpoints с незадекларированными статусами |
+
+> **Примечание:** `BehavioralPatterns XSS` на `/createdb` — Flask Werkzeug debug page
+> возвращает HTML с `<script>` тегами при 500 ошибке. Это корректное поведение checker'а
+> (HTML-ответ с script тегом), а не реальная XSS уязвимость в смысле user-controlled injection.
+>
+> **Примечание:** `NameSpaceRule` включается только при успешной аутентификации обоих
+> пользователей. Убедитесь что `make setup` завершился успешно.
 
 ---
 
 ### Сценарий 2 — BOLA / NameSpaceRule
 
-Два пользователя: user1 создаёт ресурсы, user2 пытается их читать.
+Два пользователя: user1 создаёт ресурсы, name2 пытается их читать.
 
 ```bash
 make run-2
@@ -130,8 +140,8 @@ make run-2
 ./../../shelob-ng \
   -spec     openapi3.yaml \
   -url      http://localhost:5000 \
-  -user     admin1  -password pass1 \
-  -user2    user2   -pass2    pass2 \
+  -user     name1  -password pass1 \
+  -user2    name2   -pass2    pass2 \
   -csp-disable \
   -duration 5m \
   -output   results/02_bola
@@ -139,14 +149,14 @@ make run-2
 
 **Как работает NameSpaceRule:**
 ```
-1. admin1 GET /books/v1/admin1-book → 200 (ресурс существует)
+1. name1 GET /books/v1/name1-book → 200 (ресурс существует)
 2. anonymous probe → 401 (не публичный)
-3. user2 GET /books/v1/admin1-book → 200  ← BOLA HIGH (V3)
+3. name2 GET /books/v1/name1-book → 200  ← BOLA HIGH (V3)
 ```
 
 **Ожидаемые findings:**
-- `NameSpaceRule HIGH` — `GET /books/v1/{book_title}` (V3: книга admin1 доступна user2)
-- `NameSpaceRule HIGH` — `GET /users/v1/{username}` (V2: профиль admin1 доступен user2)
+- `NameSpaceRule HIGH` — `GET /books/v1/{book_title}` (V3: книга name1 доступна name2)
+- `NameSpaceRule HIGH` — `GET /users/v1/{username}` (V2: профиль name1 доступен name2)
 
 **Почему нужен длинный прогон (5m):**
 Corpus должен накопить реальные `book_title` из ответов `GET /books/v1` через
@@ -164,7 +174,7 @@ make run-3
 ./../../shelob-ng \
   -spec     openapi3.yaml \
   -url      http://localhost:5000 \
-  -user     admin1 -password pass1 \
+  -user     name1 -password pass1 \
   -payloads sqli=../juice-shop/payloads/sqli.txt,\
             nosql=../juice-shop/payloads/nosql.txt,\
             lfi=../juice-shop/payloads/lfi.txt \
@@ -188,8 +198,8 @@ make run-3
 ./../../shelob-ng \
   -spec       openapi3.yaml \
   -url        http://localhost:5000 \
-  -user       admin1  -password pass1 \
-  -user2      user2   -pass2    pass2 \
+  -user       name1  -password pass1 \
+  -user2      name2   -pass2    pass2 \
   -payloads   sqli=../juice-shop/payloads/sqli.txt,\
               nosql=../juice-shop/payloads/nosql.txt \
   -corpus-dir corpus/full \
@@ -250,18 +260,18 @@ ls results/bola_secure/findings/ | wc -l
 
 # Только Rate Limit
 ./../../shelob-ng -spec openapi3.yaml -url http://localhost:5000 \
-  -user admin1 -password pass1 -checker RateLimitChecker \
+  -user name1 -password pass1 -checker RateLimitChecker \
   -csp-disable -duration 1m -output results/rate_limit_only
 
 # Только BOLA
 ./../../shelob-ng -spec openapi3.yaml -url http://localhost:5000 \
-  -user admin1 -password pass1 -user2 user2 -pass2 pass2 \
+  -user name1 -password pass1 -user2 name2 -pass2 pass2 \
   -checker NameSpaceRule \
   -csp-disable -duration 10m -output results/bola_only
 
 # Только Mass Assignment
 ./../../shelob-ng -spec openapi3.yaml -url http://localhost:5000 \
-  -user admin1 -password pass1 \
+  -user name1 -password pass1 \
   -checker MassAssignment \
   -csp-disable -duration 5m -output results/mass_assignment_only
 ```
@@ -279,13 +289,13 @@ ls results/bola_secure/findings/ | wc -l
 ```bash
 # Вручную воспроизвести находку:
 curl -v http://localhost:5000/users/v1/_debug
-# Ответ: [{"admin":false,"email":"admin1@mail.com","password":"pass1",...}, ...]
+# Ответ: [{"admin":false,"email":"mail1@mail.com","password":"pass1",...}, ...]
 ```
 
 С кастомным wordlist:
 ```bash
 ./../../shelob-ng -spec openapi3.yaml -url http://localhost:5000 \
-  -user admin1 -password pass1 \
+  -user name1 -password pass1 \
   -path-wordlist my_custom_paths.txt \
   -csp-disable -duration 1m
 # Формат my_custom_paths.txt:
@@ -306,7 +316,7 @@ curl -v http://localhost:5000/users/v1/_debug
 for i in $(seq 1 10); do
   curl -s -o /dev/null -w "%{http_code} " -X POST http://localhost:5000/users/v1/login \
     -H 'Content-Type: application/json' \
-    -d '{"username":"admin1","password":"wrongpass"}'
+    -d '{"username":"name1","password":"wrongpass"}'
 done
 # Ожидаем: 403 403 403 403 403 403 403 403 403 403 — нет 429
 ```
