@@ -59,25 +59,34 @@ weight(entry) = log2(1 + CoverageDelta) / log2(2 + UseCount)
   preventing the fuzzer from fixating on a small number of high-delta inputs.
 - Seeds (`CoverageDelta = 1`) start with `weight ≈ 1.0 / log2(2) = 1.0`.
 
-### Selection Algorithm
+### Selection Algorithm — Per-Operation Round-Robin
 
-Weighted random selection with prefix sums (O(log n)):
+`Select()` uses a two-level strategy to ensure fair distribution across API operations:
 
 ```
-1. Compute cumulative weight array: cum[i] = sum(weight[0..i])
-2. Pick r = random in [0, cum[last]]
-3. Binary search for i where cum[i-1] ≤ r < cum[i]
-4. Return entries[i]
+Level 1 — Round-robin across operations:
+  operation = opOrder[rrIdx % len(opOrder)]
+  rrIdx++
+
+Level 2 — Weighted random within the chosen operation:
+  candidates = operation.mutated  (prefer) or operation.seeds  (fallback)
+  return weightedSelect(candidates)  # prefix-sum O(log n)
 ```
 
-This O(log n) algorithm makes selection efficient even for large corpora (15k entries).
+**Why round-robin?** Without it, a high-traffic endpoint (e.g. POST /login)
+with many high-delta mutations would dominate the selection, starving low-traffic
+endpoints of mutation budget. Round-robin gives every operation an equal share
+of iterations regardless of corpus size per operation.
+
+Within each operation, weighted random selection with prefix sums (O(log n))
+still favours high-delta, low-use-count entries.
 
 ### Priority Rules
 
-1. Mutated entries (`Generation > 0`) are weighted as described above.
-2. Seeds (`Generation = 0`) are selected uniformly at random, weighted equally.
-3. When the corpus contains only seeds (no successful mutations yet), seeds are
-   selected in a round-robin pattern to ensure all operations are visited early.
+1. Round-robin selects the next operation in `opOrder` (insertion order).
+2. Within the operation, mutated entries (`Generation > 0`) are preferred over seeds.
+3. Within each group (mutated or seeds), weighted selection applies.
+4. If the round-robin lands on an empty operation bucket, it skips to the next.
 
 ---
 

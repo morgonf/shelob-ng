@@ -66,8 +66,8 @@ shelob-ng/
 ├── auth/                     POST /login → extract cookies/JWT
 ├── corpus/
 │   ├── entry.go              CorpusEntry, Hash(), Clone(), entryWeight()
-│   ├── corpus.go             weightedCorpus: Add/Select, 15k cap, eviction
-│   ├── selection.go          prefix-sum O(log n) weighted random selection
+│   ├── corpus.go             weightedCorpus: per-op sub-corpora, round-robin Select, 15k cap
+│   ├── selection.go          prefix-sum O(log n) weighted random selection within operation
 │   ├── pool.go               DynamicValuePool: per-key ring buffer (256)
 │   ├── seed.go               SeedFromSpec: 3 random entries per operation
 │   ├── dependency.go         DependencyGraph: producer → consumer bindings

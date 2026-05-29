@@ -417,12 +417,11 @@ checker invocation, and auth step. Useful for:
 
 | Code | Meaning |
 |------|---------|
-| `0` | Normal exit (duration expired or SIGINT) |
-| `1` | Fatal error (missing required flag, spec parse failure, etc.) |
+| `0` | Normal exit — duration expired, SIGINT, or `-fail-on` set but no matching findings |
+| `1` | Fatal error (missing required flag, spec parse failure, etc.) **or** `-fail-on` triggered |
 
-**Note:** The fuzzer exits with `0` even if HIGH severity findings were produced.
-CI/CD pipelines that need to fail on findings should check for non-empty
-`findings/` directory or use the SARIF report.
+By default the fuzzer exits with `0` even when findings are produced.
+Use `-fail-on high` (or `medium`/`low`) to opt into non-zero exit for CI/CD.
 
 ---
 
