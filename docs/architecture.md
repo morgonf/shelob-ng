@@ -49,9 +49,6 @@ flowchart TB
         sh["checkerWg.Wait() → save corpus → api-coverage.json → SARIF"]
     end
 
-    style api fill:#e8d5f5,stroke:#7c3aed
-    style checkers fill:#fef9c3,stroke:#ca8a04
-    style log fill:#dcfce7,stroke:#16a34a
 ```
 
 > `*` RateLimitChecker is stateful — it persists hit counts across calls.
@@ -336,9 +333,6 @@ flowchart LR
 
     shutdown["🛑 SIGINT / SIGTERM"] --> wg["checkerWg.Wait()\ndrain all goroutines\nthen save + exit"]
 
-    style sem fill:#fef3c7,stroke:#d97706
-    style log fill:#dcfce7,stroke:#16a34a
-    style shutdown fill:#fee2e2,stroke:#dc2626
 ```
 
 The semaphore cap of 8 prevents unbounded goroutine growth when the target API

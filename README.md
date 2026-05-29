@@ -126,10 +126,6 @@ flowchart TD
 
     run --> support
 
-    style target fill:#e8d5f5,stroke:#7c3aed
-    style sidecar fill:#dbeafe,stroke:#2563eb
-    style output fill:#dcfce7,stroke:#16a34a
-    style checkers fill:#fef9c3,stroke:#ca8a04
 ```
 
 ### Package map
@@ -657,8 +653,6 @@ flowchart TD
     check -->|"4xx ✅"| ok["correct — no finding"]
     check -->|"2xx 🚨"| uaf["UseAfterFree HIGH\nresource accessible after DELETE"]
 
-    style uaf fill:#fee2e2,stroke:#dc2626
-    style ok fill:#dcfce7,stroke:#16a34a
 ```
 
 ### Replay persistence
