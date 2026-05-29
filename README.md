@@ -925,6 +925,7 @@ The difference reveals endpoints that are unreachable or crash on every input.
 | `-payloads` | | Payload wordlists: `key=path,key2=path2` |
 | `-checker` | all | Comma-separated checker names to enable; empty = all. Valid names: `BehavioralPatterns`, `UseAfterFree`, `InvalidDynamicObject`, `LeakageRule`, `NameSpaceRule`, `BFLA`, `AuthBypassRule`, `SchemaViolation`, `RateLimitChecker`, `MassAssignment`, `ReDoSChecker` |
 | `-path-wordlist` | | File with extra paths for the PathDiscovery pre-scan (one path per line; tab-separated description optional). Built-in list already covers 70+ paths. |
+| `-fail-on` | | Exit with code 1 when at least one finding at or above this severity is written. Valid: `high`, `medium`, `low`. Empty = disabled. CI usage: `-fail-on high` |
 | `-sarif` | | Write a Svacer-compatible SARIF 2.1.0 report to this path at end of run (e.g. `results.sarif`) |
 
 ---

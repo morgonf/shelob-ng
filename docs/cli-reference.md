@@ -153,6 +153,43 @@ GitHub Actions integration:
     sarif_file: results.sarif
 ```
 
+### `-fail-on <severity>`
+
+Exit with code **1** after the run completes when at least one finding at or
+above `<severity>` was written. Severity order: `high > medium > low`.
+
+All I/O (corpus save, api-coverage.json, SARIF) completes before the process
+exits, so no data is lost.
+
+```bash
+# Fail CI pipeline on any HIGH finding
+./shelob-ng -spec api.json -url http://target \
+    -duration 10m -fail-on high
+
+# Fail on MEDIUM or higher
+./shelob-ng -spec api.json -url http://target \
+    -duration 10m -fail-on medium
+```
+
+**CI/CD pipeline pattern:**
+
+```bash
+./shelob-ng -spec api.json -url http://staging \
+    -user admin@corp.local -password AdminPass \
+    -duration 10m -output ./ci-results \
+    -fail-on high
+EXIT=$?
+# Exit 0 = no HIGH findings
+# Exit 1 = at least one HIGH finding (printed to stdout before exit)
+```
+
+When findings trigger the exit, a summary is printed:
+```
+FAIL: 2 finding(s) at "high" severity or above:
+  • [high] BehavioralPatterns — SQL Error Leakage
+  • [high] RateLimitChecker — Missing Rate Limiting on Auth Endpoint
+```
+
 ### `-detailed`
 
 Include successful (2xx) test cases in the output log alongside findings.

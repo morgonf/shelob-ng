@@ -53,6 +53,11 @@ type Config struct {
 	// Empty string disables SARIF output.
 	SarifOut string
 
+	// FailOn is the minimum severity that causes the process to exit with
+	// code 1 after the run completes. Empty string disables the behaviour.
+	// Valid values: "high", "medium", "low". Common CI usage: "high".
+	FailOn string
+
 	// PathWordlist is an optional file of extra paths for the path discovery
 	// pre-scan. One path per line; lines starting with # are comments.
 	// Empty string uses only the built-in wordlist.
@@ -88,6 +93,7 @@ func ParseCliArgs() Config {
 	user2 := flag.String("user2", "", "second user for BOLA/NameSpaceRule checker")
 	pass2 := flag.String("pass2", "", "second user password for BOLA/NameSpaceRule checker")
 	sarifOut := flag.String("sarif", "", "write SARIF 2.1.0 report to this path (e.g. results.sarif)")
+	failOn      := flag.String("fail-on", "", `exit with code 1 when at least one finding at or above this severity is written; valid: "high", "medium", "low" (empty = disabled)`)
 	pathWordlist := flag.String("path-wordlist", "", "file with extra paths to probe during path discovery scan (one path per line, tab-separated description optional)")
 
 	flag.Parse()
@@ -133,6 +139,7 @@ func ParseCliArgs() Config {
 		User2:    *user2,
 		Pass2:    *pass2,
 		SarifOut:     *sarifOut,
+		FailOn:       strings.ToLower(strings.TrimSpace(*failOn)),
 		PathWordlist: *pathWordlist,
 		NoColor:      *noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb",
 	}

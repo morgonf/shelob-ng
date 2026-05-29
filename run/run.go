@@ -421,6 +421,46 @@ func Run() {
 			log.Infof("corpus saved to %s", cfg.CorpusDir)
 		}
 	}
+
+	// Exit with code 1 when -fail-on is set and matching findings exist.
+	// Runs after all I/O completes so no data is lost.
+	if cfg.FailOn != "" {
+		exitOnFindings(filepath.Join(cfg.OutputDir, "findings"), cfg.FailOn)
+	}
+}
+
+// exitOnFindings scans the findings directory and calls os.Exit(1) when at
+// least one finding at or above minSeverity exists. Severity order: high > medium > low.
+func exitOnFindings(findingsDir, minSeverity string) {
+	severityRank := map[string]int{"low": 1, "medium": 2, "high": 3}
+	threshold, ok := severityRank[minSeverity]
+	if !ok {
+		log.Warnf("fail-on: unknown severity %q (valid: high, medium, low) — ignoring", minSeverity)
+		return
+	}
+
+	entries, err := reporting.ReadFindingsDir(findingsDir)
+	if err != nil {
+		log.Debugf("fail-on: read findings: %v", err)
+		return
+	}
+
+	var matched []string
+	for _, e := range entries {
+		if rank, ok2 := severityRank[strings.ToLower(e.Severity)]; ok2 && rank >= threshold {
+			matched = append(matched, fmt.Sprintf("[%s] %s — %s", e.Severity, e.Checker, e.Title))
+		}
+	}
+
+	if len(matched) == 0 {
+		return
+	}
+
+	fmt.Printf("\nFAIL: %d finding(s) at %q severity or above:\n", len(matched), minSeverity)
+	for _, m := range matched {
+		fmt.Printf("  • %s\n", m)
+	}
+	os.Exit(1)
 }
 
 // doRequest sends req and reads the full response body.

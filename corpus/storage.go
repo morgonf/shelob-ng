@@ -11,12 +11,8 @@ import (
 )
 
 // storageVersion is bumped when the on-disk format changes incompatibly.
-// Load rejects files with a different version to prevent silent corruption.
 const storageVersion = 1
 
-// storageIndex is the top-level manifest written to corpus-dir/index.json.
-// It lists all entry hashes so Load can find individual entry files without
-// scanning the directory.
 type storageIndex struct {
 	Version    int       `json:"version"`
 	EntryCount int       `json:"entry_count"`
@@ -24,36 +20,32 @@ type storageIndex struct {
 	SavedAt    time.Time `json:"saved_at"`
 }
 
-// entriesDir returns the subdirectory path where individual entry files live.
 func entriesDir(dir string) string {
 	return filepath.Join(dir, "entries")
 }
 
 // Save writes the entire corpus to dir. Each entry is stored as
 // {dir}/entries/{hash}.json; a manifest at {dir}/index.json lists all hashes.
-//
-// Save is safe to call concurrently with Add and Select: it acquires a read
-// lock for the duration of the index build, then releases it before writing files.
 func (c *weightedCorpus) Save(dir string) error {
 	if err := os.MkdirAll(entriesDir(dir), 0o755); err != nil {
 		return fmt.Errorf("corpus save: create entries dir: %w", err)
 	}
 
-	// Hold RLock while reading entries and writing their files. Save is infrequent
-	// (called periodically or at shutdown), so briefly blocking Add/Select is
-	// acceptable. Snapshotting only pointers and releasing the lock would create
-	// a data race: Select() writes UseCount under write lock concurrently with
-	// json.Marshal reading it in Save().
-	c.mu.RLock()
-	hashes := make([]string, 0, len(c.entries))
-	for _, e := range c.entries {
+	c.mu.Lock()
+	var all []*CorpusEntry
+	for _, sc := range c.byOp {
+		all = append(all, sc.all()...)
+	}
+	c.mu.Unlock()
+
+	hashes := make([]string, 0, len(all))
+	for _, e := range all {
 		if err := saveEntry(dir, e); err != nil {
 			log.Warnf("corpus save: entry %s: %v", e.Hash(), err)
 			continue
 		}
 		hashes = append(hashes, e.Hash())
 	}
-	c.mu.RUnlock()
 
 	index := storageIndex{
 		Version:    storageVersion,
@@ -70,8 +62,6 @@ func (c *weightedCorpus) Save(dir string) error {
 }
 
 // Load reads corpus entries from dir using the index manifest.
-// Entries that fail to parse are skipped with a warning.
-// Not safe to call concurrently with Add or Select.
 func (c *weightedCorpus) Load(dir string) error {
 	indexPath := filepath.Join(dir, "index.json")
 	data, err := os.ReadFile(indexPath)
@@ -92,8 +82,9 @@ func (c *weightedCorpus) Load(dir string) error {
 	}
 
 	loaded := 0
+	c.mu.Lock()
 	for _, hash := range index.Hashes {
-		if len(c.entries) >= maxCorpusSize {
+		if c.total >= maxCorpusSize {
 			log.Warnf("corpus load: reached maxCorpusSize=%d, skipping remaining entries", maxCorpusSize)
 			break
 		}
@@ -102,17 +93,29 @@ func (c *weightedCorpus) Load(dir string) error {
 			log.Warnf("corpus load: entry %s: %v", hash, err)
 			continue
 		}
-		// Bypass Add filters: restored entries already passed delta and dedup
-		// checks when first saved. Direct append preserves their metrics.
-		c.entries = append(c.entries, entry)
+		// Bypass Add filters: restored entries already passed checks when saved.
+		k := opKey(entry)
+		sc, exists := c.byOp[k]
+		if !exists {
+			sc = &subCorpus{}
+			c.byOp[k] = sc
+			c.opOrder = append(c.opOrder, k)
+		}
+		if entry.Generation == 0 {
+			sc.seeds = append(sc.seeds, entry)
+		} else {
+			sc.mutated = append(sc.mutated, entry)
+		}
 		c.hashes[entry.Hash()] = struct{}{}
+		c.total++
 		loaded++
 	}
+	c.mu.Unlock()
+
 	log.Infof("corpus: loaded %d/%d entries from %s", loaded, len(index.Hashes), dir)
 	return nil
 }
 
-// saveEntry writes one CorpusEntry to {dir}/entries/{hash}.json.
 func saveEntry(dir string, entry *CorpusEntry) error {
 	data, err := json.Marshal(entry)
 	if err != nil {
@@ -122,7 +125,6 @@ func saveEntry(dir string, entry *CorpusEntry) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// loadEntry reads and parses {dir}/entries/{hash}.json, then recomputes the hash.
 func loadEntry(dir string, hash string) (*CorpusEntry, error) {
 	path := filepath.Join(entriesDir(dir), hash+".json")
 	data, err := os.ReadFile(path)
@@ -133,14 +135,10 @@ func loadEntry(dir string, hash string) (*CorpusEntry, error) {
 	if err := json.Unmarshal(data, &entry); err != nil {
 		return nil, fmt.Errorf("parse: %w", err)
 	}
-	// Recompute hash after loading so the in-memory hash field is populated.
-	// The hash field is excluded from JSON (json:"-") and must be rebuilt.
 	_ = entry.Hash()
 	return &entry, nil
 }
 
-// writeJSON is a helper that marshals v and writes it to path atomically
-// (write to temp file, then rename).
 func writeJSON(path string, v interface{}) error {
 	data, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {

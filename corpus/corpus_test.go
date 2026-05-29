@@ -111,10 +111,64 @@ func TestSelect_FallsBackToSeeds(t *testing.T) {
 	}
 }
 
-func TestEvictWeakest_RemovesLowestWeight(t *testing.T) {
-	wc := &weightedCorpus{hashes: make(map[string]struct{})}
+// TestSelect_RoundRobinAcrossOperations verifies that Select distributes
+// picks evenly across operations even when one has many more entries.
+func TestSelect_RoundRobinAcrossOperations(t *testing.T) {
+	c := NewCorpusManager()
 
-	// Add three entries with distinct weights.
+	// Add 10 entries for GET /users and 1 entry for POST /orders.
+	for i := 0; i < 10; i++ {
+		e := makeEntry("GET", "/users", map[string]interface{}{"id": int64(i)}, nil)
+		e.Generation = 1
+		c.Add(e, 1)
+	}
+	orderEntry := makeEntry("POST", "/orders", nil, []byte(`{"item":"x"}`))
+	orderEntry.Generation = 1
+	c.Add(orderEntry, 1)
+
+	// Over 100 selections, each operation should be chosen roughly half the time.
+	counts := map[string]int{}
+	for i := 0; i < 100; i++ {
+		e := c.Select()
+		counts[e.Method+" "+e.PathPattern]++
+	}
+
+	usersCount := counts["GET /users"]
+	ordersCount := counts["POST /orders"]
+
+	// With 2 operations round-robin, each should get ~50 picks.
+	// Allow ±15 for randomness within each bucket.
+	if usersCount < 35 || usersCount > 65 {
+		t.Errorf("GET /users: expected ~50 selections, got %d (orders: %d)", usersCount, ordersCount)
+	}
+	if ordersCount < 35 || ordersCount > 65 {
+		t.Errorf("POST /orders: expected ~50 selections, got %d (users: %d)", ordersCount, usersCount)
+	}
+}
+
+// addDirect inserts entry directly into wc without delta/dedup checks.
+// Used by tests that need to inspect internal eviction behaviour.
+func addDirect(wc *weightedCorpus, e *CorpusEntry) {
+	k := opKey(e)
+	if wc.byOp[k] == nil {
+		wc.byOp[k] = &subCorpus{}
+		wc.opOrder = append(wc.opOrder, k)
+	}
+	// All test entries have Generation > 0 (or we set it) to make them evictable.
+	if e.Generation == 0 {
+		e.Generation = 1
+	}
+	wc.byOp[k].mutated = append(wc.byOp[k].mutated, e)
+	wc.hashes[e.Hash()] = struct{}{}
+	wc.total++
+}
+
+func TestEvictWeakest_RemovesLowestWeight(t *testing.T) {
+	wc := &weightedCorpus{
+		byOp:   make(map[string]*subCorpus),
+		hashes: make(map[string]struct{}),
+	}
+
 	weak := makeEntry("GET", "/weak", map[string]interface{}{"id": int64(1)}, nil)
 	weak.CoverageDelta = 1
 	weak.UseCount = 100 // high useCount → low weight
@@ -128,31 +182,33 @@ func TestEvictWeakest_RemovesLowestWeight(t *testing.T) {
 	strong.UseCount = 0
 
 	for _, e := range []*CorpusEntry{weak, medium, strong} {
-		wc.entries = append(wc.entries, e)
-		wc.hashes[e.Hash()] = struct{}{}
+		addDirect(wc, e)
 	}
 
 	wc.evictWeakest()
 
-	if len(wc.entries) != 2 {
-		t.Fatalf("expected 2 entries after eviction, got %d", len(wc.entries))
+	if wc.total != 2 {
+		t.Fatalf("expected 2 entries after eviction, got %d", wc.total)
 	}
-	for _, e := range wc.entries {
-		if e.PathPattern == "/weak" {
-			t.Error("weakest entry (/weak) was not evicted")
+	for _, sc := range wc.byOp {
+		for _, e := range sc.all() {
+			if e.PathPattern == "/weak" {
+				t.Error("weakest entry (/weak) was not evicted")
+			}
 		}
 	}
 }
 
 func TestEvictWeakest_RemovesHashFromIndex(t *testing.T) {
-	wc := &weightedCorpus{hashes: make(map[string]struct{})}
+	wc := &weightedCorpus{
+		byOp:   make(map[string]*subCorpus),
+		hashes: make(map[string]struct{}),
+	}
 	e := makeEntry("GET", "/x", nil, nil)
 	e.CoverageDelta = 1
 	h := e.Hash()
 
-	wc.entries = append(wc.entries, e)
-	wc.hashes[h] = struct{}{}
-
+	addDirect(wc, e)
 	wc.evictWeakest()
 
 	if _, exists := wc.hashes[h]; exists {

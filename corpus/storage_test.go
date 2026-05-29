@@ -28,7 +28,10 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	}
 
 	// Load into a fresh corpus.
-	restored := &weightedCorpus{hashes: make(map[string]struct{})}
+	restored := &weightedCorpus{
+		byOp:   make(map[string]*subCorpus),
+		hashes: make(map[string]struct{}),
+	}
 	if err := restored.Load(dir); err != nil {
 		t.Fatalf("Load error: %v", err)
 	}
@@ -37,8 +40,12 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 		t.Errorf("expected 2 entries after Load, got %d", restored.Size())
 	}
 
-	// Verify content round-trips.
-	for _, e := range restored.entries {
+	// Verify content round-trips by iterating all per-op buckets.
+	var all []*CorpusEntry
+	for _, sc := range restored.byOp {
+		all = append(all, sc.all()...)
+	}
+	for _, e := range all {
 		switch e.PathPattern {
 		case "/users/{id}":
 			if e.PathParams["id"] != int64(1) {
