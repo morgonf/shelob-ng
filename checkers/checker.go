@@ -99,5 +99,6 @@ func All() []Checker {
 		BrokenFunctionLevelAuthorization{},
 		AuthBypassRule{},
 		SchemaViolation{},
+		NewRateLimitChecker(), // stateful: must be a pointer so counters persist
 	}
 }
