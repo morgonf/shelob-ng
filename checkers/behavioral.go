@@ -77,6 +77,17 @@ var patterns = []behavioralPattern{
 		regexp.MustCompile(`(TypeError: Cannot read propert|ReferenceError: \w+ is not defined|at Object\.<anonymous> \(|at Module\._compile |\.js:\d+:\d+\))`),
 		"Node.js Stack Trace", SeverityMedium, false,
 	},
+	// SSRF indicators — server fetched a URL from user input and the response
+	// contains cloud metadata content or references to internal addresses.
+	// These patterns match content returned by AWS/GCP/Azure instance metadata
+	// endpoints, confirming that the server made an outbound request.
+	{
+		regexp.MustCompile(`(169\.254\.169\.254|metadata\.google\.internal|computeMetadata/v1|` +
+			`"ami-id"|"instance-type"|"local-ipv4"|"local-hostname"|` +
+			`"project-id"\s*:|"serviceAccounts"|` +
+			`"subscriptionId"\s*:|"resourceGroupName")`),
+		"SSRF: Cloud Metadata Leakage", SeverityHigh, false,
+	},
 }
 
 // BehavioralPatterns scans response bodies for known vulnerability artifact patterns.

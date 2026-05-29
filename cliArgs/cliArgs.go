@@ -53,6 +53,11 @@ type Config struct {
 	// Empty string disables SARIF output.
 	SarifOut string
 
+	// PathWordlist is an optional file of extra paths for the path discovery
+	// pre-scan. One path per line; lines starting with # are comments.
+	// Empty string uses only the built-in wordlist.
+	PathWordlist string
+
 	// NoColor disables ANSI escape codes in the status display.
 	// Set automatically when NO_COLOR env var is set or TERM=dumb.
 	NoColor bool
@@ -79,10 +84,11 @@ func ParseCliArgs() Config {
 	cspDisable := flag.Bool("csp-disable", false, "disable coverage feedback (run in pure-random mode)")
 	corpusDir := flag.String("corpus-dir", "", "directory for corpus persistence; empty = in-memory only")
 	payloads := flag.String("payloads", "", "security payload files as key=path pairs (e.g. sqli=/tmp/sqli.txt,xss=/tmp/xss.txt)")
-	checker := flag.String("checker", "", "comma-separated checkers to enable (empty = all); valid names: BehavioralPatterns,UseAfterFree,InvalidDynamicObject,LeakageRule,NameSpaceRule,BFLA,AuthBypassRule,SchemaViolation,RateLimitChecker")
+	checker := flag.String("checker", "", "comma-separated checkers to enable (empty = all); valid names: BehavioralPatterns,UseAfterFree,InvalidDynamicObject,LeakageRule,NameSpaceRule,BFLA,AuthBypassRule,SchemaViolation,RateLimitChecker,MassAssignment,ReDoSChecker")
 	user2 := flag.String("user2", "", "second user for BOLA/NameSpaceRule checker")
 	pass2 := flag.String("pass2", "", "second user password for BOLA/NameSpaceRule checker")
 	sarifOut := flag.String("sarif", "", "write SARIF 2.1.0 report to this path (e.g. results.sarif)")
+	pathWordlist := flag.String("path-wordlist", "", "file with extra paths to probe during path discovery scan (one path per line, tab-separated description optional)")
 
 	flag.Parse()
 
@@ -126,8 +132,9 @@ func ParseCliArgs() Config {
 		Checker:    *checker,
 		User2:    *user2,
 		Pass2:    *pass2,
-		SarifOut: *sarifOut,
-		NoColor:  *noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb",
+		SarifOut:     *sarifOut,
+		PathWordlist: *pathWordlist,
+		NoColor:      *noColor || os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb",
 	}
 }
 

@@ -84,6 +84,9 @@ func NewMutator(cfg Config) Mutator {
 		{strategy: &byteLevelMutator{rng: rng}, weight: byteW},
 		{strategy: &structuralMutator{rng: rng, schema: cfg.Schema}, weight: structW},
 		{strategy: &securityMutator{rng: rng, payloads: cfg.Payloads}, weight: secW},
+		// SSRF strategy: built-in, no external payload files needed.
+		// Low weight (0.5) so it fires on ~10% of mutations when other strategies apply.
+		{strategy: &ssrfMutator{rng: rng}, weight: 0.5},
 	}
 
 	return &weightedMutator{

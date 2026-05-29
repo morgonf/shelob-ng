@@ -15,6 +15,7 @@
 package run
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -39,6 +40,7 @@ import (
 	"shelob-ng/mutator"
 	"shelob-ng/mutator/payloads"
 	"shelob-ng/openapi"
+	"shelob-ng/pathscan"
 	"shelob-ng/reporting"
 	"shelob-ng/request"
 	"shelob-ng/sequence"
@@ -165,6 +167,27 @@ func Run() {
 	// Output directory.
 	logging.CreateDir(cfg.OutputDir)
 
+	// Dedup set shared by pathscan, the main checker loop, and sequence findings.
+	var seenFindings sync.Map
+
+	// Path discovery pre-scan: probe hidden/undocumented paths once before the
+	// main loop. Findings are written to the output directory immediately.
+	{
+		extra := loadPathWordlist(cfg.PathWordlist)
+		scanner := pathscan.New(httpClient, targetURL, authCookies, cfg.ApiKey, cfg.Token, extra)
+		scanCtx, scanCancel := context.WithTimeout(*ctx, 60*time.Second)
+		scanFindings := scanner.Scan(scanCtx)
+		scanCancel()
+		for _, f := range scanFindings {
+			if logFinding(f, cfg.OutputDir, &seenFindings) {
+				log.Infof("pathscan: %s [%s] %s", f.Severity, f.Title, f.URL)
+			}
+		}
+		if len(scanFindings) > 0 {
+			log.Infof("pathscan: %d finding(s) written to %s", len(scanFindings), cfg.OutputDir)
+		}
+	}
+
 	// API spec coverage tracker: records which spec operations were exercised.
 	opTracker := apicov.NewTracker(spec)
 
@@ -211,11 +234,6 @@ func Run() {
 	const checkerConcurrency = 8
 	checkerSem := make(chan struct{}, checkerConcurrency)
 	var checkerWg sync.WaitGroup
-
-	// Dedup set for findings: keyed by Finding.DedupeKey() so the same class
-	// of issue on the same endpoint is written exactly once per session.
-	// sync.Map is safe for concurrent access from checker goroutines.
-	var seenFindings sync.Map
 
 	start := time.Now()
 	var seqTick int
@@ -646,4 +664,28 @@ func getLoginEndpoint(spec *openapi3.T) string {
 
 	log.Warn("no login endpoint found in spec; using default /api/v3/user/login")
 	return "/api/v3/user/login"
+}
+
+// loadPathWordlist reads extra path candidates from a file (one path per line).
+// Returns nil when path is empty or the file cannot be opened.
+func loadPathWordlist(path string) []pathscan.Candidate {
+	if path == "" {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		log.Warnf("path-wordlist: cannot open %s: %v", path, err)
+		return nil
+	}
+	defer f.Close()
+
+	var candidates []pathscan.Candidate
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if c, ok := pathscan.ParseWordlistLine(scanner.Text()); ok {
+			candidates = append(candidates, c)
+		}
+	}
+	log.Infof("path-wordlist: loaded %d extra paths from %s", len(candidates), path)
+	return candidates
 }

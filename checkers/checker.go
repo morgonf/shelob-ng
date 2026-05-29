@@ -99,6 +99,8 @@ func All() []Checker {
 		BrokenFunctionLevelAuthorization{},
 		AuthBypassRule{},
 		SchemaViolation{},
-		NewRateLimitChecker(), // stateful: must be a pointer so counters persist
+		NewRateLimitChecker(), // stateful: pointer so counters persist across calls
+		MassAssignment{},
+		ReDosChecker{},
 	}
 }
