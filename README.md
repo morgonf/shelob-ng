@@ -42,10 +42,17 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 |---------|-------------|
 | **OpenAPI-guided** | Seeds corpus from spec; all 3.x parameter locations supported (path, query, header, cookie, body) |
 | **AFL-style corpus** | Inputs that increase code coverage are saved, weighted by delta, and preferentially mutated |
-| **Three mutators** | Structural (type-aware, grammar-constrained), byte-level (bit/byte flips), security payloads (external wordlists) |
+| **Four mutators** | Structural (grammar-constrained), byte-level, security payloads (external wordlists), SSRF (built-in, injects internal URLs into URL-typed fields) |
 | **Grammar-constrained mutation** | Structural mutator reads `minimum`, `maximum`, `minLength`, `maxLength`, `enum` from the spec — 70% of mutations stay within valid bounds to reach business logic; 30% test boundary violations |
+| **allOf / oneOf / anyOf** | Schema composition keywords are fully resolved before generation — polymorphic endpoints no longer generate empty bodies |
+| **Circular $ref safe** | Recursive schemas (Kubernetes-style tree nodes) are handled with a depth cap of 5; no stack overflow |
 | **Producer-consumer graph** | Links `POST /X` (producer) to `GET|PUT|DELETE /X/{id}` (consumer); pre-executes the producer to inject a real resource ID before the consumer request; learns at runtime when the spec lacks response schemas |
-| **Eight checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, BFLA, AuthBypassRule, SchemaViolation |
+| **Eleven checkers** | BehavioralPatterns, UseAfterFree, InvalidDynamicObject, LeakageRule, NameSpaceRule, BFLA, AuthBypassRule, SchemaViolation, RateLimitChecker, MassAssignment, ReDoSChecker |
+| **Path Discovery pre-scan** | Probes 70+ hidden/undocumented paths (debug endpoints, Spring Actuator, version-divergent routes, admin interfaces) before the main loop; `-path-wordlist` extends the built-in list |
+| **Rate limit detection** | RateLimitChecker fires a burst of 8 rapid requests after a threshold of natural non-429 responses; HIGH on auth paths (login, OTP, password reset), MEDIUM elsewhere |
+| **Mass assignment detection** | MassAssignment checker injects privilege-escalation fields (`role:admin`, `admin:true`, `credits:99999`) into POST/PUT/PATCH bodies; HIGH when reflected in response, MEDIUM when silently accepted |
+| **ReDoS detection** | ReDoSChecker compares response time for short vs. long inputs designed for catastrophic backtracking (email/URL/IP patterns); fires when ratio ≥ 5× and absolute delay ≥ 500 ms |
+| **SSRF payload injection** | Built-in ssrfMutator detects URL-typed fields by name (`*_url`, `*_api`, `*_callback`, `mechanic_api`, etc.) and injects AWS/GCP/Azure metadata URLs and localhost variants |
 | **BOLA / IDOR detection** | NameSpaceRule replays every 2xx request with a second-user session; cross-account access = finding |
 | **BFLA detection** | BrokenFunctionLevelAuthorization probes admin/privileged endpoints with a lower-privilege user; role-boundary bypass = finding |
 | **Auth bypass detection** | AuthBypassRule fires when an anonymous probe returns 2xx on an operation the OpenAPI spec marks as requiring authentication |
@@ -91,7 +98,7 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 │                │  ┌──────────────────────────────────────────────┐   │ │
 │                │  │  checkers/ (async goroutines, semaphore=8)   │   │ │
 │                │  │                                              │   │ │
-│                │  │  BehavioralPatterns  — body regex scan       │   │ │
+│                │  │  BehavioralPatterns  — body regex + SSRF    │   │ │
 │                │  │  UseAfterFree        — DELETE → GET probe    │   │ │
 │                │  │  InvalidDynamicObject— boundary ID probes    │   │ │
 │                │  │  LeakageRule         — POST 4xx → GET probe  │   │ │
@@ -99,6 +106,9 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 │                │  │  BFLA                — role-boundary probe   │   │ │
 │                │  │  AuthBypassRule      — anon probe vs spec    │   │ │
 │                │  │  SchemaViolation     — OAS response validate │   │ │
+│                │  │  RateLimitChecker*   — burst probe (429?)    │   │ │
+│                │  │  MassAssignment      — poison fields probe   │   │ │
+│                │  │  ReDoSChecker        — timing ratio probe    │   │ │
 │                │  │                                              │   │ │
 │                │  │  finding → DedupeKey → logFinding (JSON+POC) │   │ │
 │                │  └──────────────────────────────────────────────┘   │ │
@@ -107,12 +117,12 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 │                │  │ reporting/ │   │  apicov/ │   │     ui/       │  │ │
 │                │  │ SARIF 2.1.0│   │ coverage │   │ libfuzz-style │  │ │
 │                │  └────────────┘   └──────────┘   └───────────────┘  │ │
-│                │  ┌────────────┐                                      │ │
-│                │  │ sequence/  │                                      │ │
-│                │  │ CRUD runs  │                                      │ │
-│                │  │ every 20th │                                      │ │
-│                │  └────────────┘                                      │ │
-│                └──────────────────────────────────────────────────────┘ │
+│                │  ┌────────────┐   ┌──────────────────────────────────────┐        │ │
+│                │  │ sequence/  │   │ pathscan/ (pre-scan, runs once)       │        │ │
+│                │  │ CRUD runs  │   │  70+ hidden paths probed before loop  │        │ │
+│                │  │ every 20th │   └──────────────────────────────────────┘        │ │
+│                │  └────────────┘                                                    │ │
+│                └──────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
         │  HTTP requests                  │  POST /csp/reset
         ▼                                 │  GET  /csp/dump
@@ -592,9 +602,12 @@ as-is (clone of the selected corpus entry).
 
 ## Security checkers
 
-Eight stateless checkers run after every request/response pair. Checkers that
-issue additional HTTP probe requests do so concurrently (goroutine pool,
-semaphore 8) so they do not block the main fuzzing loop.
+Eleven checkers run after every request/response pair. Checkers that issue
+additional HTTP probe requests do so concurrently (goroutine pool, semaphore 8).
+`RateLimitChecker` is stateful (tracks per-endpoint hit counts across calls).
+
+Additionally, **PathDiscovery** runs once before the main loop as a pre-scan,
+probing 70+ hidden/undocumented paths.
 
 Every finding is written exactly **once** per session (deduplicated by
 `checker + method + path_pattern`) and includes a **`curl` POC command**
@@ -667,16 +680,20 @@ that reproduces the issue.
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-| Checker | Extra HTTP requests | Severity |
-|---------|-------------------|---------|
-| `BehavioralPatterns` | 0 | high / medium |
-| `UseAfterFree` | 1 GET | high |
-| `InvalidDynamicObject` | up to 5 (one per sentinel value × param) | medium |
-| `LeakageRule` | 1 GET | medium |
-| `NameSpaceRule` | 1–2 (anon + user2 probe) | high |
-| `BFLA` | 1–2 (anon + user2 probe, privileged endpoints only) | high |
-| `AuthBypassRule` | 1 (anon probe on spec-secured operations) | high |
-| `SchemaViolation` | 0 | medium |
+| Checker | Extra HTTP requests | Severity | Notes |
+|---------|-------------------|---------|----|
+| `BehavioralPatterns` | 0 | high / medium | also detects SSRF cloud metadata responses |
+| `UseAfterFree` | 1 GET | high | |
+| `InvalidDynamicObject` | up to 5 | medium | |
+| `LeakageRule` | 1 GET | medium | skips 401 + collection endpoints |
+| `NameSpaceRule` | 1–2 | high | requires `-user2 / -pass2` |
+| `BFLA` | 1–2 | high | requires `-user2 / -pass2`; privileged paths only |
+| `AuthBypassRule` | 1 | high | requires auth credentials configured |
+| `SchemaViolation` | 0 | medium | |
+| `RateLimitChecker` | 8 (burst) | high / medium | stateful; HIGH on auth paths |
+| `MassAssignment` | 1 | high / medium | POST/PUT/PATCH with JSON body only |
+| `ReDoSChecker` | 2–6 (timing) | medium | conservative: 5× ratio + 500 ms |
+| `PathDiscovery` | 1 per path (pre-scan) | high / medium / info | runs once before main loop |
 
 ---
 
@@ -979,7 +996,8 @@ The difference reveals endpoints that are unreachable or crash on every input.
 | `-csp-disable` | false | Force pure-random mode even if `-csp-url` is set |
 | `-corpus-dir` | | Persist/load corpus to/from this directory |
 | `-payloads` | | Payload wordlists: `key=path,key2=path2` |
-| `-checker` | all | Comma-separated checker names to enable; empty = all. Valid names: `BehavioralPatterns`, `UseAfterFree`, `InvalidDynamicObject`, `LeakageRule`, `NameSpaceRule`, `BFLA`, `AuthBypassRule`, `SchemaViolation` |
+| `-checker` | all | Comma-separated checker names to enable; empty = all. Valid names: `BehavioralPatterns`, `UseAfterFree`, `InvalidDynamicObject`, `LeakageRule`, `NameSpaceRule`, `BFLA`, `AuthBypassRule`, `SchemaViolation`, `RateLimitChecker`, `MassAssignment`, `ReDoSChecker` |
+| `-path-wordlist` | | File with extra paths for the PathDiscovery pre-scan (one path per line; tab-separated description optional). Built-in list already covers 70+ paths. |
 | `-sarif` | | Write a Svacer-compatible SARIF 2.1.0 report to this path at end of run (e.g. `results.sarif`) |
 
 ---
@@ -1053,9 +1071,28 @@ GET /csp/dump:
 
 ## Example: OWASP Juice Shop
 
-The `example/` directory contains a complete, ready-to-run walkthrough against
-[OWASP Juice Shop](https://github.com/juice-shop/juice-shop) — an intentionally
-vulnerable Node.js e-commerce application.
+The `example/` directory contains ready-to-run examples for **6 test targets**,
+each in its own subdirectory with a `Makefile`, `config.env`, and numbered
+scenario scripts.
+
+| Directory | Target | Focus |
+|-----------|--------|-------|
+| `example/juice-shop/` | OWASP Juice Shop | Full OWASP Top 10 + API, 10 scenarios |
+| `example/vampi/` | VAmPI | 9 documented vulns, switchable mode |
+| `example/crapi/` | crAPI (OWASP) | All OWASP API Top 10 2023 + LLM |
+| `example/dvws-node/` | DVWS-Node | 39 classes: cmdi, LDAP, XPATH, XXE |
+| `example/petstore/` | Swagger Petstore 3 | Sandbox baseline + OAuth2/apiKey |
+| `example/restler-demo/` | RESTler Demo Server | Producer-consumer graph test |
+
+**Quick test (all new checkers, 2 min):**
+```bash
+cd example/vampi/
+make setup && make run-1
+# Expected: ~33 findings (7 HIGH): PathDiscovery HIGH on /users/v1/_debug,
+#           RateLimitChecker HIGH on login, ReDoSChecker MEDIUM, MassAssignment MEDIUM
+```
+
+### Juice Shop — detailed walkthrough
 
 ### Prerequisites
 
@@ -1070,7 +1107,7 @@ vulnerable Node.js e-commerce application.
 ### Setup (one time)
 
 ```bash
-cd example/
+cd example/juice-shop/
 
 # Check prerequisites
 make check
@@ -1249,6 +1286,9 @@ func All() []Checker {
         BrokenFunctionLevelAuthorization{},
         AuthBypassRule{},
         SchemaViolation{},
+        NewRateLimitChecker(), // stateful checkers use pointer + constructor
+        MassAssignment{},
+        ReDosChecker{},
         MyChecker{},  // add here
     }
 }
