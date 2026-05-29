@@ -32,7 +32,8 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
     - [SARIF report](#sarif-report--sarif-path)
 12. [All flags](#all-flags)
 13. [Coverage Sidecar Protocol (CSP)](#coverage-sidecar-protocol)
-14. [Example: OWASP Juice Shop](#example-owasp-juice-shop)
+14. [Examples: Test Targets](#examples-test-targets)
+    - [Juice Shop — 10 scenarios with CSP coverage](#juice-shop--10-scenarios-with-csp-coverage)
 
 ---
 
