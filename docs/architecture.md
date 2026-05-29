@@ -7,74 +7,54 @@ the internal architecture, data flow, concurrency model, and design decisions.
 
 ## Overview
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              shelob-ng                                  │
-│                                                                         │
-│  CLI flags ──▶ Config ──▶ Run()                                         │
-│                            │                                            │
-│              ┌─────────────▼──────────────────────────────────────┐    │
-│              │              Startup                                 │    │
-│              │  1. Load + validate OpenAPI spec                     │    │
-│              │  2. Auth: login → get cookies / JWT                  │    │
-│              │  3. Corpus: SeedFromSpec (3 entries/operation)       │    │
-│              │  4. Build dependency graph + CRUD sequences          │    │
-│              │  5. PathDiscovery pre-scan (70+ hidden paths)        │    │
-│              └──────────────────────────────────────────────────────┘    │
-│                                                                         │
-│              ┌─────────────────────────────────────────────────────┐    │
-│              │              Main Loop (duration-bounded)            │    │
-│              │                                                      │    │
-│              │  corpus.Select() ──▶ mutator.Mutate()               │    │
-│              │       │                     │                        │    │
-│              │       │              CorpusEntry (mutated)           │    │
-│              │       │                     │                        │    │
-│              │       ▼                     ▼                        │    │
-│              │  DependencyGraph  request.FromCorpusEntry()          │    │
-│              │  (pre-execute     (build *http.Request)              │    │
-│              │   producer if     │                                  │    │
-│              │   needed)         │                                  │    │
-│              │                   ▼                                  │    │
-│              │             cspClient.Reset()                        │    │
-│              │             httpClient.Do(req) ──▶ Target API        │    │
-│              │             cspClient.Dump() → delta                 │    │
-│              │                   │                                  │    │
-│              │           ┌───────▼────────┐                        │    │
-│              │           │ if delta > 0   │                        │    │
-│              │           │ or first 2xx   │                        │    │
-│              │           │ corpus.Add()   │                        │    │
-│              │           └────────────────┘                        │    │
-│              │                   │                                  │    │
-│              │           pool.Extract(body) ──▶ DynamicValuePool   │    │
-│              │           apicov.Mark()                              │    │
-│              │                   │                                  │    │
-│              │           checkers (async goroutines, sem=8)         │    │
-│              │           ├── BehavioralPatterns                     │    │
-│              │           ├── UseAfterFree                           │    │
-│              │           ├── InvalidDynamicObject                   │    │
-│              │           ├── LeakageRule                            │    │
-│              │           ├── NameSpaceRule                          │    │
-│              │           ├── BFLA                                   │    │
-│              │           ├── AuthBypassRule                         │    │
-│              │           ├── SchemaViolation                        │    │
-│              │           ├── RateLimitChecker*                      │    │
-│              │           ├── MassAssignment                         │    │
-│              │           └── ReDoSChecker                           │    │
-│              │                   │                                  │    │
-│              │           logFinding() ──▶ output/findings/*.json    │    │
-│              │                                                      │    │
-│              │   Every 20 iterations: sequence.Runner.Run()         │    │
-│              └──────────────────────────────────────────────────────┘    │
-│                                                                         │
-│              ┌──────────────────────────────────────────────────────┐   │
-│              │              Shutdown (SIGINT/SIGTERM)                 │   │
-│              │  checkerWg.Wait() → save corpus → write api-coverage  │   │
-│              │  write SARIF (if -sarif) → display.Done()             │   │
-│              └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+    cli["⚙️ CLI flags\n-spec -url -user …"] --> cfg["Config"]
+    cfg --> run["run.Run()"]
+
+    run --> startup
+
+    subgraph startup ["🚀 Startup"]
+        direction TB
+        s1["Load + validate OpenAPI spec"] --> s2["Auth: login → cookies / JWT"]
+        s2 --> s3["SeedFromSpec — 3 entries / operation"]
+        s3 --> s4["Build dependency graph + CRUD sequences"]
+        s4 --> s5["PathDiscovery: probe 70+ hidden paths"]
+    end
+
+    startup --> mainloop
+
+    subgraph mainloop ["🔄 Main Loop — duration bounded"]
+        direction TB
+        sel["corpus.Select()"] -->|"weighted random"| mut["mutator.Mutate()"]
+        mut -->|"mutated clone"| dep["DependencyGraph\npre-execute producer → real IDs"]
+        dep --> bld["request.FromCorpusEntry()"]
+        bld --> csp1["cspClient.Reset()"]
+        csp1 --> http["httpClient.Do(req)"]
+        http <-->|"HTTP"| api[("🌐 Target API")]
+        http --> csp2["cspClient.Dump() → delta"]
+        csp2 --> admit{"delta > 0\nor first 2xx?"}
+        admit -->|"yes"| add["corpus.Add(entry, delta)"]
+        admit -->|"no"| pool
+        add --> pool["pool.Extract(body)   apicov.Mark()"]
+        pool --> checkers["⚡ Checkers\nasync goroutines · semaphore = 8"]
+        checkers --> log["logFinding() → output/findings/*.json"]
+        log -.->|"every 20 iters"| seq["sequence.Runner.Run()"]
+        seq -.-> sel
+    end
+
+    mainloop --> shutdown
+
+    subgraph shutdown ["🛑 Shutdown — SIGINT / SIGTERM"]
+        sh["checkerWg.Wait() → save corpus → api-coverage.json → SARIF"]
+    end
+
+    style api fill:#e8d5f5,stroke:#7c3aed
+    style checkers fill:#fef9c3,stroke:#ca8a04
+    style log fill:#dcfce7,stroke:#16a34a
 ```
 
-`*` RateLimitChecker is stateful — it persists hit counts across calls.
+> `*` RateLimitChecker is stateful — it persists hit counts across calls.
 
 ---
 
@@ -277,19 +257,23 @@ one finding file per vulnerability class.
 
 ## Mutation Pipeline
 
-```
-weightedMutator.Mutate(entry)
-  │
-  ├── Pick strategy by weight
-  │     structural : security : byte-level : ssrf = 3.0 : 1.0 : 1.0 : 0.5
-  │
-  ├── clone = entry.Clone()
-  │
-  ├── strategy.Apply(clone)
-  │     ├── OK → return mutated clone
-  │     └── StrategyNotApplicable → try next strategy
-  │
-  └── If all strategies fail → return original clone unchanged
+```mermaid
+flowchart TD
+    entry["CorpusEntry\nfrom corpus.Select()"] --> clone["entry.Clone()"]
+    clone --> pick{"Pick strategy\nby weight"}
+
+    pick -->|"3.0 — 53%"| str["🏗️ structuralMutator\ngrammar-constrained\nboundary values"]
+    pick -->|"1.0 — 18%"| sec["💉 securityMutator\ninject payload string\nfrom -payloads wordlist"]
+    pick -->|"1.0 — 18%"| byl["🔩 byteLevelMutator\nbitFlip · byteFlip\ninsert · delete · dup"]
+    pick -->|"0.5 — 9%"| ssrf["🌐 ssrfMutator\nURL-field detection\ncloud metadata URLs"]
+
+    str & sec & byl & ssrf --> ok{"Apply()\nresult?"}
+
+    ok -->|"OK"| result["✅ mutated CorpusEntry"]
+    ok -->|"StrategyNotApplicable"| fallback["try remaining strategies\nin insertion order"]
+    fallback --> ok2{"any succeeded?"}
+    ok2 -->|"yes"| result
+    ok2 -->|"all failed"| orig["original clone\nunchanged"]
 ```
 
 ### Strategy: Structural
@@ -335,24 +319,26 @@ and localhost variants. Weight = 0.5 (fires on ~10% of mutations).
 
 ## Checker Concurrency Model
 
-```
-Main loop
-│
-├── for each checker in activeCheckers:
-│     capture: chk, entry, req, resp, body, outDir
-│     checkerSem ← struct{}{}      // blocks if all 8 slots occupied
-│     checkerWg.Add(1)
-│     go func():
-│         defer: <-checkerSem, checkerWg.Done()
-│         findings = chk.Check(ctx, checkCtx, entry, req, resp, body)
-│         for f in findings:
-│             logFinding(f, outDir, &seenFindings)   // sync.Map atomic
-│             display.Finding(...)
-│
-└── (main loop continues immediately without waiting for goroutines)
+```mermaid
+flowchart LR
+    ml["Main Loop\niteration N"] -->|"acquire slot\nblocks if cap=8 full"| sem(["checkerSem\nchannel cap = 8"])
 
-Shutdown:
-    checkerWg.Wait()   // drain all outstanding checker goroutines
+    sem --> g1["goroutine\nBehavioralPatterns"]
+    sem --> g2["goroutine\nNameSpaceRule"]
+    sem --> g3["goroutine\nRateLimitChecker"]
+    sem --> gn["goroutine …\nup to 8 concurrent"]
+
+    g1 & g2 & g3 & gn -->|"release slot"| sem
+
+    g1 & g2 & g3 & gn -->|"finding"| log["logFinding()\nsync.Map atomic dedup\nwrite JSON + POC"]
+
+    ml -->|"continues immediately\nno wait"| ml2["Main Loop\niteration N+1"]
+
+    shutdown["🛑 SIGINT / SIGTERM"] --> wg["checkerWg.Wait()\ndrain all goroutines\nthen save + exit"]
+
+    style sem fill:#fef3c7,stroke:#d97706
+    style log fill:#dcfce7,stroke:#16a34a
+    style shutdown fill:#fee2e2,stroke:#dc2626
 ```
 
 The semaphore cap of 8 prevents unbounded goroutine growth when the target API

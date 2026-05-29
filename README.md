@@ -72,64 +72,64 @@ INFO: corpus: 171 seed entries            checkers: BehavioralPatterns UseAfterF
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              shelob-ng                                  │
-│                                                                         │
-│  ┌──────────┐  ┌──────────────────────────────────────────────────────┐ │
-│  │ cliArgs/ │  │                     run/Run()                        │ │
-│  │  Config  │─▶│                                                      │ │
-│  └──────────┘  │  ┌──────────┐    ┌───────────┐    ┌──────────────┐  │ │
-│                │  │ corpus/  │───▶│ mutator/  │───▶│  request/    │  │ │
-│  ┌──────────┐  │  │  Select()│    │  Mutate() │    │  FromCorpus  │  │ │
-│  │ openapi/ │  │  │  Add()   │    │           │    │  Entry()     │  │ │
-│  │  spec +  │─▶│  │  Pool    │    │structural │    └──────┬───────┘  │ │
-│  │  router  │  │  └────▲─────┘    │byte-level │           │          │ │
-│  └──────────┘  │       │          │security   │           ▼          │ │
-│                │       │          └───────────┘     http.Client      │ │
-│                │  ┌────┴──────┐                          │           │ │
-│                │  │ coverage/ │◀─── csp.Reset()          │           │ │
-│                │  │ CSP client│     csp.Dump()            ▼          │ │
-│                │  └───────────┘                     Target API       │ │
-│                │                                         │           │ │
-│                │  ┌──────────────────────────────────────┘           │ │
-│                │  │           response + body                        │ │
-│                │  ▼                                                  │ │
-│                │  ┌──────────────────────────────────────────────┐   │ │
-│                │  │  checkers/ (async goroutines, semaphore=8)   │   │ │
-│                │  │                                              │   │ │
-│                │  │  BehavioralPatterns  — body regex + SSRF    │   │ │
-│                │  │  UseAfterFree        — DELETE → GET probe    │   │ │
-│                │  │  InvalidDynamicObject— boundary ID probes    │   │ │
-│                │  │  LeakageRule         — POST 4xx → GET probe  │   │ │
-│                │  │  NameSpaceRule       — user2 BOLA probe      │   │ │
-│                │  │  BFLA                — role-boundary probe   │   │ │
-│                │  │  AuthBypassRule      — anon probe vs spec    │   │ │
-│                │  │  SchemaViolation     — OAS response validate │   │ │
-│                │  │  RateLimitChecker*   — burst probe (429?)    │   │ │
-│                │  │  MassAssignment      — poison fields probe   │   │ │
-│                │  │  ReDoSChecker        — timing ratio probe    │   │ │
-│                │  │                                              │   │ │
-│                │  │  finding → DedupeKey → logFinding (JSON+POC) │   │ │
-│                │  └──────────────────────────────────────────────┘   │ │
-│                │                                                      │ │
-│                │  ┌────────────┐   ┌──────────┐   ┌───────────────┐  │ │
-│                │  │ reporting/ │   │  apicov/ │   │     ui/       │  │ │
-│                │  │ SARIF 2.1.0│   │ coverage │   │ libfuzz-style │  │ │
-│                │  └────────────┘   └──────────┘   └───────────────┘  │ │
-│                │  ┌────────────┐   ┌──────────────────────────────────────┐        │ │
-│                │  │ sequence/  │   │ pathscan/ (pre-scan, runs once)       │        │ │
-│                │  │ CRUD runs  │   │  70+ hidden paths probed before loop  │        │ │
-│                │  │ every 20th │   └──────────────────────────────────────┘        │ │
-│                │  └────────────┘                                                    │ │
-│                └──────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────┘
-        │  HTTP requests                  │  POST /csp/reset
-        ▼                                 │  GET  /csp/dump
-  ┌───────────────┐               ┌───────▼──────────┐
-  │  Target API   │               │   CSP sidecar    │
-  │  (any REST)   │               │   (optional)     │
-  └───────────────┘               └──────────────────┘
+```mermaid
+flowchart TD
+    spec["📄 OpenAPI Spec\n.json / .yaml"] --> openapi["openapi/\nparse · validate\ngorilla/mux router"]
+    cli["⚙️ CLI flags"] --> cfg["Config"]
+
+    openapi & cfg --> run
+
+    subgraph run ["run/Run()"]
+        direction TB
+
+        subgraph startup ["🚀 Startup — once"]
+            ps["pathscan/\nPathDiscovery\n70+ hidden paths"]
+            sg["corpus/\nSeedFromSpec\n3 entries / op"]
+            dg["sequence/\nDependencyGraph\nCRUD sequences"]
+        end
+
+        subgraph loop ["🔄 Main Loop"]
+            direction LR
+            corp["corpus/\nSelect by weight\nDynamicValuePool"]
+            mut["mutator/\nStructural · Security\nByte-level · SSRF"]
+            req["request/\nBuild HTTP req\nApplyAuth"]
+            cov["coverage/\nCSP client\nReset · Dump"]
+            corp -->|"weighted random"| mut
+            mut -->|"mutated clone"| req
+            req --> cov
+            cov -->|"delta → Add()"| corp
+        end
+
+        subgraph checkers ["⚡ checkers/ — async · semaphore = 8"]
+            direction LR
+            bp["BehavioralPatterns\nSQL · XSS · LFI · SSRF"]
+            auth["AuthBypassRule\nNameSpaceRule · BFLA"]
+            state["RateLimitChecker\nMassAssignment · ReDoS"]
+            rest["UseAfterFree\nInvalidDynObj\nLeakageRule · Schema"]
+        end
+
+        startup --> loop
+        loop --> checkers
+    end
+
+    req <-->|"HTTP"| target[("🌐 Target API\nany REST")]
+    cov <-->|"POST /csp/reset\nGET /csp/dump"| sidecar["🔬 CSP Sidecar\noptional"]
+
+    checkers --> output["📁 output/\nfindings/*.json\nreplays/\napi-coverage.json\nresults.sarif"]
+
+    subgraph support ["Support packages"]
+        direction LR
+        apicov["apicov/\nvisited · succeeded"]
+        sarif["reporting/\nSARIF 2.1.0"]
+        ui["ui/\nlibfuzzer display\nINITED · NEW · DONE"]
+    end
+
+    run --> support
+
+    style target fill:#e8d5f5,stroke:#7c3aed
+    style sidecar fill:#dbeafe,stroke:#2563eb
+    style output fill:#dcfce7,stroke:#16a34a
+    style checkers fill:#fef9c3,stroke:#ca8a04
 ```
 
 ### Package map
@@ -534,68 +534,43 @@ address real resources.
 
 ## Mutation strategies
 
-Three strategies are composed with weighted random selection
-(structural : security : byte-level = 3 : 2 : 1 by default):
+Four strategies are composed with weighted random selection:
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  structuralMutator  (weight 3)                                   │
-│                                                                  │
-│  Pick one field:  path > query > header > cookie > body          │
-│                   (body has 2× selection weight)                 │
-│                                                                  │
-│  When the OpenAPI spec declares constraints for the field,       │
-│  grammar-constrained mutation applies:                            │
-│    70%  →  valid value within [minimum, maximum] / enum          │
-│    30%  →  boundary violation (one step outside the valid range) │
-│                                                                  │
-│  Without constraints, unconstrained mutation applies:            │
-│  string  ─▶  edge cases: "", " ", "null", "\x00", 256×"A"       │
-│              truncate to random prefix                            │
-│              duplicate: v + v                                    │
-│  int64   ─▶  0, ±1, MaxInt64, MinInt64, 256, 65535, 65536       │
-│              nudge: v + {-1, 0, +1}                              │
-│  float64 ─▶  0.0, ±1.0, MaxFloat32, nudge                       │
-│  bool    ─▶  flip                                                │
-│  body    ─▶  inject poison field  (__proto__, $where, etc.)      │
-│              remove random leaf field                             │
-│              mutate random leaf value (constraints applied        │
-│              per field when schema declares them)                 │
-└──────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+    entry["CorpusEntry\nfrom corpus.Select()"] --> wrs{"Weighted\nRandom\nSelect"}
 
-┌──────────────────────────────────────────────────────────────────┐
-│  securityMutator    (weight 2, requires -payloads)               │
-│                                                                  │
-│  Inject payload strings from external wordlist files into        │
-│  all string-typed fields (path, query, header, cookie, body).    │
-│                                                                  │
-│  Body injection uses dotted-path traversal to reach nested       │
-│  leaves, so {"user": {"name": "Alice"}} → injects into "name".  │
-│                                                                  │
-│  Returns StrategyNotApplicable when:                             │
-│    • no payload files loaded (-payloads not set)                 │
-│    • entry has no string-typed fields                            │
-└──────────────────────────────────────────────────────────────────┘
+    wrs -->|"weight 3.0 · 53%"| structural
+    wrs -->|"weight 1.0 · 18%"| security
+    wrs -->|"weight 1.0 · 18%"| bytelevel
+    wrs -->|"weight 0.5 · 9%"| ssrf
 
-┌──────────────────────────────────────────────────────────────────┐
-│  byteLevelMutator   (weight 1)                                   │
-│                                                                  │
-│  Operates directly on raw Body bytes.                            │
-│  One of 6 operations chosen uniformly at random:                 │
-│                                                                  │
-│    bitFlip       flip one random bit in the body                 │
-│    byteFlip      XOR one random byte with 0xFF                   │
-│    insertion     insert one random byte at a random position     │
-│    deletion      remove one random byte                          │
-│    duplication   append the body to itself (body + body)         │
-│    interesting   replace one byte with a boundary value:         │
-│                  0x00 / 0x01 / 0x7F / 0x80 / 0xFE / 0xFF        │
-│                                                                  │
-│  Returns StrategyNotApplicable when Body is empty.               │
-└──────────────────────────────────────────────────────────────────┘
+    subgraph structural ["🏗️ structuralMutator"]
+        direction TB
+        sf["Pick one field\npath · query · header · cookie · body 2×"]
+        sc["Schema constrained?\n70% valid within bounds\n30% one step outside"]
+        sb["Body ops:\naddField · removeField · mutateLeaf"]
+    end
+
+    subgraph security ["💉 securityMutator"]
+        direction TB
+        si["Inject from -payloads wordlist\nsqli · xss · ssti · lfi · nosql · cmdi\ninto any string-typed field"]
+    end
+
+    subgraph bytelevel ["🔩 byteLevelMutator"]
+        direction TB
+        bo["Raw Body bytes\nbitFlip · byteFlip · insert\ndelete · duplicate\ninteresting byte (0x00/0x7F/0xFF)"]
+    end
+
+    subgraph ssrf ["🌐 ssrfMutator — built-in"]
+        direction TB
+        su["Detect URL-typed fields\nby name or current value\nInject: localhost · 169.254.169.254\nAWS · GCP · Azure metadata"]
+    end
+
+    structural & security & bytelevel & ssrf --> result["✅ mutated clone\nor StrategyNotApplicable\n→ try next strategy"]
 ```
 
-If all three strategies return `StrategyNotApplicable`, the entry is used
+If all strategies return `StrategyNotApplicable`, the entry is used
 as-is (clone of the selected corpus entry).
 
 ---
@@ -613,72 +588,32 @@ Every finding is written exactly **once** per session (deduplicated by
 `checker + method + path_pattern`) and includes a **`curl` POC command**
 that reproduces the issue.
 
+```mermaid
+flowchart LR
+    req["Every HTTP\nrequest + response"] --> passive & probing
+
+    subgraph passive ["Zero extra requests"]
+        bp["BehavioralPatterns\nSQL · XSS · LFI · cmdi\nSSTI · SSRF metadata\nstack traces"]
+        sv["SchemaViolation\nvalidate body vs OAS schema"]
+        rd["ReDoSChecker\ntiming ratio ≥5× and ≥500ms"]
+    end
+
+    subgraph probing ["Issues probe requests"]
+        uaf["UseAfterFree\nDELETE 2xx → GET probe\n→ still 2xx = HIGH"]
+        ido["InvalidDynamicObject\nboundary path params\n-1 · 0 · null · empty\n→ 5xx = MEDIUM"]
+        lk["LeakageRule\nPOST 4xx → GET probe\nskip 401 + collections"]
+        ns["NameSpaceRule\nanon probe → user2 probe\nBOLA / IDOR = HIGH"]
+        bf["BFLA\nanon probe → user2 probe\non admin-heuristic paths"]
+        ab["AuthBypassRule\nanon probe on spec-secured ops\nauth bypass = HIGH"]
+        rl["RateLimitChecker ★stateful\nburst 8 probes after threshold\nno 429 = HIGH auth / MED other"]
+        ma["MassAssignment\npoison fields probe\nrole·admin·credits reflected = HIGH"]
+    end
+
+    passive & probing --> dedup["DedupeKey\nchecker + method + PathPattern\nsync.Map — once per session"]
+    dedup -->|"new finding"| out["📁 findings/*.json\ncurl POC · severity · detail"]
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│  For every completed request ──────────────────────────────────────▶│
-│                                                                     │
-│  BehavioralPatterns                                                 │
-│    Scans response body with 9 regexes (no extra HTTP requests)      │
-│    ─ SQL errors    ─ XSS artifacts    ─ Path traversal indicators   │
-│    ─ SSTI markers  ─ Go/Python/Java/Node.js stack traces            │
-│    Severity: HIGH for SQL/XSS/LFI/SSTI, MEDIUM for stack traces     │
-│                                                                     │
-│  UseAfterFree                                                       │
-│    Trigger: DELETE returned 2xx                                     │
-│    Probe:   GET same URL with auth cookies                          │
-│    Finding: GET also 2xx  →  HIGH ("resource accessible after DELETE")
-│                                                                     │
-│  InvalidDynamicObject                                               │
-│    Trigger: entry has any path parameters                           │
-│    Probes:  substitute each param with -1, 0, 999999999, "null", "" │
-│    Finding: probe returns 5xx  →  MEDIUM (no input validation)      │
-│                                                                     │
-│  LeakageRule                                                        │
-│    Trigger: POST returned 4xx — except:                             │
-│             • 401 (auth rejected before any logic ran)              │
-│             • collection endpoints (no path params in entry) —      │
-│               POST /collection → GET /collection → 200 is normal   │
-│               REST behaviour, not a partial write                   │
-│    Probe:   GET <target_base_url>/<path> (no query string)          │
-│    Finding: GET returns 2xx  →  MEDIUM (partial state committed)    │
-│                                                                     │
-│  NameSpaceRule  (requires -user2 / -pass2)                          │
-│    Trigger: any request returned 2xx for user1                      │
-│    Probe 1: anonymous probe — strips all auth (cookies, token,       │
-│             API key); if 2xx, endpoint is public → skip             │
-│    Probe 2: user2 cookies + X-Api-Key (shared, if set)             │
-│             Bearer token is NOT forwarded — it encodes user1's      │
-│             identity (JWT sub) and would defeat the BOLA check      │
-│    Finding: user2 also 2xx  →  HIGH (BOLA / IDOR)                  │
-│                                                                     │
-│  BFLA  (requires -user2 / -pass2)                                   │
-│    Difference from NameSpaceRule: tests ROLE not OWNERSHIP.         │
-│    NameSpaceRule: user2 accessing a specific resource of user1.     │
-│    BFLA: user2 (low privilege) calling an admin-only function.      │
-│    Heuristic: path segment admin|backoffice|dashboard|internal|     │
-│               manage|management|panel|private|staff|superuser|      │
-│               console; or operationId containing "admin".           │
-│    Trigger: endpoint matches heuristic AND user1 got 2xx            │
-│    Probe 1: anonymous probe — if 2xx, endpoint is public → skip     │
-│    Probe 2: user2 cookies + X-Api-Key (Bearer withheld)             │
-│    Finding: user2 also 2xx  →  HIGH (BFLA)                         │
-│                                                                     │
-│  AuthBypassRule  (requires at least one auth credential)            │
-│    Tests: can an unauthenticated request reach an endpoint that the │
-│           OpenAPI spec marks as requiring authentication?            │
-│    Distinction from NameSpaceRule/BFLA: those checkers SKIP when    │
-│    the anonymous probe returns 2xx; AuthBypassRule FIRES.           │
-│    Signal: op.security non-empty in spec (bearerAuth, apiKey, etc.) │
-│    Trigger: user1 got 2xx AND spec declares security on operation   │
-│    Probe:   anonymous (all auth stripped)                           │
-│    Finding: anonymous also 2xx  →  HIGH (missing auth enforcement)  │
-│                                                                     │
-│  SchemaViolation                                                    │
-│    Validates the actual response body against the OpenAPI schema    │
-│    (uses the real body, not an empty stub like the legacy code did) │
-│    Finding: schema mismatch  →  MEDIUM                             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+
+> ★ `RateLimitChecker` is stateful — it persists hit counts across goroutine calls.
 
 | Checker | Extra HTTP requests | Severity | Notes |
 |---------|-------------------|---------|----|
@@ -704,23 +639,26 @@ through all built sequences).
 
 ### How sequences are derived from the spec
 
-```
-For each POST /resource in the spec:
-  Search for a child path /resource/{param}
-  Inspect the POST 2xx response schema for id/uuid/key/slug fields
-  If found → build a 4-step CRUD sequence:
+```mermaid
+flowchart TD
+    spec["OpenAPI Spec\nPOST /resource → 201 {id}"] --> build["Build 4-step CRUD sequence\nfor each POST + child path /resource/{param}"]
 
-  Step 1  POST /resource           create → extract {id} from response
-          │
-          ▼  bind id → {param}
-  Step 2  GET  /resource/{id}      verify: expect 2xx (resource exists)
-          │
-          ▼
-  Step 3  DELETE /resource/{id}    delete: expect 2xx (server accepts)
-          │
-          ▼
-  Step 4  GET  /resource/{id}      probe:  MUST be 4xx (resource gone)
-                                   2xx here → UseAfterFree  HIGH
+    build --> s1
+
+    s1["Step 1 — Create\nPOST /resource\n→ extract id from response body"]
+    s1 -->|"bind id → {param}"| s2
+    s2["Step 2 — Verify\nGET /resource/{id}\nexpect 2xx — resource exists"]
+    s2 --> s3
+    s3["Step 3 — Delete\nDELETE /resource/{id}\nexpect 2xx — server accepts"]
+    s3 --> s4
+    s4["Step 4 — Probe after delete\nGET /resource/{id}\nMUST return 4xx — resource gone"]
+
+    s4 --> check{"response\nstatus?"}
+    check -->|"4xx ✅"| ok["correct — no finding"]
+    check -->|"2xx 🚨"| uaf["UseAfterFree HIGH\nresource accessible after DELETE"]
+
+    style uaf fill:#fee2e2,stroke:#dc2626
+    style ok fill:#dcfce7,stroke:#16a34a
 ```
 
 ### Replay persistence
@@ -754,30 +692,24 @@ consumer request.
 
 ### How it works
 
-```
-Spec analysis (startup)
-  POST /api/Users  returns {"id": 7, ...}
-    └─▶ registers bindings:
-          GET    /api/Users/{id}  → producer: POST /api/Users
-          PUT    /api/Users/{id}  → producer: POST /api/Users
-          DELETE /api/Users/{id}  → producer: POST /api/Users
+```mermaid
+sequenceDiagram
+    participant F as shelob-ng
+    participant API as 🌐 Target API
 
-Runtime learning (LearnProducer)
-  Spec has empty response schemas? No problem.
-  After every successful POST → inspect actual response body:
-    • check top-level fields (e.g. {"id": 7, ...})
-    • check nested "data" wrapper ({"status":"success","data":{"id":7,...}})
-  If an id/uuid/key field is found and the spec defines a child path → register.
+    Note over F: Startup: build graph from spec<br/>POST /api/Users → registers<br/>GET/PUT/DELETE /api/Users/{id}
 
-Before each consumer request
-  1. Execute producer:  POST /api/Users  →  201 {"data": {"id": 7}}
-  2. Extract id:        ExtractJSONField(body, "id")  →  7
-  3. Inject into entry: PathParams["id"] = 7
-  4. Send consumer:     GET /api/Users/7  →  200  (real resource!)
+    loop Before each consumer request (GET/PUT/DELETE /api/Users/{id})
+        F->>API: POST /api/Users  (pre-execute producer)
+        API-->>F: 201 {"id": 7}
+        F->>F: extract id = 7 from body
+        F->>F: PathParams["id"] = 7
 
-On producer failure (4xx / 5xx / network error):
-  Consumer proceeds with pooled or random id (graceful degradation).
-  Extracted body is still fed into DynamicValuePool for future reuse.
+        F->>API: GET /api/Users/7  (consumer with real ID)
+        API-->>F: 200 OK  ← real resource, not 404!
+    end
+
+    Note over F: On producer failure (4xx/5xx):<br/>fall back to pooled or random id
 ```
 
 ### Why 70%+ of consumer requests succeed with a real spec

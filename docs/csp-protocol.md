@@ -59,22 +59,32 @@ corpus entry is saved with that delta as its coverage weight.
 
 ## Lifecycle
 
-```
-shelob-ng                                     CSP sidecar
-    │                                              │
-    │── POST /csp/reset ────────────────────────▶ │
-    │                                     baseline = get_coverage()
-    │◀─────────────────────────── 200 OK ─────────│
-    │                                              │
-    │── fuzzing request ─────────────────────────▶ Target API
-    │◀─────────────────────────── response ───────│
-    │                                              │
-    │── GET /csp/dump ──────────────────────────▶  │
-    │                                    new = current - baseline
-    │◀─────────────────────── {"new_since_reset": [...]} ──────│
-    │                                              │
-    │  delta = len(new_since_reset)                │
-    │  if delta > 0: corpus.Add(entry, delta)      │
+```mermaid
+sequenceDiagram
+    participant F as shelob-ng
+    participant T as 🌐 Target API
+    participant S as 🔬 CSP Sidecar
+
+    loop Each fuzzing iteration
+        F->>S: POST /csp/reset
+        S->>S: baseline = snapshot_coverage()
+        S-->>F: 200 OK
+
+        F->>T: Fuzzing HTTP request
+        T-->>F: Response + body
+
+        F->>S: GET /csp/dump
+        S->>S: new = current_coverage() − baseline
+        S-->>F: {"new_since_reset": ["file.js:42", …]}
+
+        alt delta > 0  (new code paths reached)
+            F->>F: corpus.Add(entry, weight=delta)
+        else delta == 0 AND first 2xx for this operation
+            F->>F: corpus.Add(entry, weight=1)
+        else
+            F->>F: discard — no new coverage
+        end
+    end
 ```
 
 ---
